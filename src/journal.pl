@@ -193,10 +193,11 @@ ensure_cursor_call(Repo) :-
 ensure_cursor_call(_Repo).
 
 %% -- spend tracing ------------------------------------------------------------
-record_spend(RunId, Tier, Provider, Model) :-
+record_spend(RunId, Role, Provider, Model) :-
     now(Now),
-    key(spend, RunId, CallId),
-    Request = spend_request{run:RunId, tier:Tier,
+    uuid(U),
+    format(atom(CallId), 'spend:~w:~w', [RunId, U]),
+    Request = spend_request{run:RunId, role:Role,
                             provider:Provider, model:Model},
     fingerprint(Request, Fp),
     effect_call(CallId, Fp, model_call, Request, spend-RunId, Now, Call),
@@ -220,8 +221,6 @@ key(seen, EventKey, Id) :-
     format(atom(Id), 'seen:~w', [EventKey]).
 key(cursor, Repo, Id) :-
     format(atom(Id), 'cursor:~w', [Repo]).
-key(spend, RunId, Id) :-
-    format(atom(Id), 'spend:~w', [RunId]).
 
 fingerprint(Term, Hex) :-
     term_to_atom(Term, Atom),
