@@ -73,6 +73,35 @@ test(tier_chain_carries_spec_models) :-
     get_dict(name, S3, openrouter_alternate),
     get_dict(model, S3, 'z-ai/glm-5.3').
 
+test(tier_chain_execution_order_matches_spec) :-
+    (   getenv('FALLBACK_LLM_URL', SavedUrl) -> true ; SavedUrl = unset ),
+    (   getenv('FALLBACK_LLM_KEY', SavedKey) -> true ; SavedKey = unset ),
+    setup_call_cleanup(
+        (   setenv('FALLBACK_LLM_URL', 'http://127.0.0.1:9/v1'),
+            setenv('FALLBACK_LLM_KEY', 'test-key')
+        ),
+        (   model_strategy:tier_chain(chat, 'fb-model', Steps),
+            maplist(step_name, Steps, Names),
+            Names == [openrouter_primary, openrouter_alternate,
+                      fallback_endpoint],
+            member(S, Steps),
+            get_dict(name, S, fallback_endpoint),
+            get_dict(model, S, 'fb-model')
+        ),
+        restore_fallback_env(SavedUrl, SavedKey)).
+
+step_name(S, N) :- get_dict(name, S, N).
+
+restore_fallback_env(unset, _) :-
+    unsetenv('FALLBACK_LLM_URL'),
+    unsetenv('FALLBACK_LLM_KEY').
+restore_fallback_env(SavedUrl, SavedKey) :-
+    setenv('FALLBACK_LLM_URL', SavedUrl),
+    (   SavedKey == unset
+    ->  unsetenv('FALLBACK_LLM_KEY')
+    ;   setenv('FALLBACK_LLM_KEY', SavedKey)
+    ).
+
 test(egress_failure_downgrades) :-
     Table = [openrouter_primary-error(provider_error{status:transport}),
              openrouter_alternate-ok(good)],

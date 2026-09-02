@@ -60,8 +60,13 @@ tier_chain(Tier, FallbackModel, Steps) :-
                                                    FallbackModel, P3),
               _,
               fail),
-        Steps = [step{name:fallback_endpoint, model:FallbackModel, provider:P3}
-                 | Steps0]
+        % Spec execution order: primary -> alternate -> fallback endpoint,
+        % with the visible failure comment as the terminal step after the
+        % chain is exhausted.
+        append(Steps0, [step{name:fallback_endpoint,
+                             model:FallbackModel,
+                             provider:P3}],
+               Steps)
     ;   Steps = Steps0
     ).
 
