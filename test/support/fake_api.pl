@@ -52,9 +52,12 @@ count(Count) :-
     ).
 
 read_lines(S, N0, N) :-
-    (   read_line_to_string(S, _Line)
-    ->  N1 is N0 + 1,
-        read_lines(S, N1, N)
+    (   read_line_to_string(S, Line)
+    ->  (   Line == end_of_file
+        ->  N = N0
+        ;   N1 is N0 + 1,
+            read_lines(S, N1, N)
+        )
     ;   N = N0
     ).
 

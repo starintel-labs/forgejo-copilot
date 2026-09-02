@@ -192,7 +192,13 @@ record_effect(Repo, PR, Sha, Action, EffectId) :-
     fingerprint(Request, Fp),
     effect_call(CallId, Fp, posted_effect, Request,
                 effect-Repo-PR-Sha-Action, Now, Call),
-    effect_persist_put_call(Call).
+    effect_persist_put_call(Call),
+    ensure_effect_index,
+    key(effect_index, idx, IndexId),
+    uuid(AddedId),
+    Added = effect_event{event_id:AddedId, kind:effect_added,
+                         repo:Repo, pr:PR, sha:Sha, action:Action},
+    effect_persist_append_event(IndexId, Added).
 
 effect_record(Repo, PR, Sha, Call) :-
     member(Action, [comment, review, pr, branch, push]),
@@ -206,9 +212,31 @@ effect_posted(Repo, PR, Sha) :-
     effect_posted(Repo, PR, Sha, _Call).
 
 effect_facts(Facts) :-
-    findall(posted_effect(Repo, PR, Sha),
-            effect_posted(Repo, PR, Sha),
-            Facts).
+    ensure_effect_index,
+    key(effect_index, idx, IndexId),
+    effect_persist_events(IndexId, Events),
+    findall(posted_effect(R, P, S),
+            (   member(E, Events),
+                get_dict(kind, E, effect_added),
+                get_dict(repo, E, R),
+                get_dict(pr, E, P),
+                get_dict(sha, E, S)
+            ),
+            Facts0),
+    sort(Facts0, Facts).
+
+ensure_effect_index :-
+    \+ (   key(effect_index, idx, CallId),
+           effect_persist_get_call(CallId, _Fp, _Call)
+       ),
+    !,
+    now(Now),
+    key(effect_index, idx, CallId),
+    Request = effect_index_request{},
+    fingerprint(Request, Fp),
+    effect_call(CallId, Fp, effect_index, Request, effect-index, Now, Call),
+    effect_persist_put_call(Call).
+ensure_effect_index.
 
 %% -- seen events ------------------------------------------------------------
 mark_seen(EventKey) :-
@@ -284,6 +312,8 @@ key(cursor, Repo, Id) :-
     format(atom(Id), 'cursor:~w', [Repo]).
 key(lease_index, idx, Id) :-
     format(atom(Id), 'lease-index', []).
+key(effect_index, idx, Id) :-
+    format(atom(Id), 'effect-index', []).
 
 fingerprint(Term, Hex) :-
     term_to_atom(Term, Atom),

@@ -122,7 +122,7 @@ process_event(Repo, Polled, Event, EventKey, Options) :-
     Sha = Polled.sha,
     base_config(Repo, PR, Options, ConfigFileSpec),
     copilot_config:parse(ConfigFileSpec, Config),
-    Facts = journal:facts,
+    journal:facts(Facts),
     (   Event.kind == unknown
     ->  journal:mark_seen(EventKey)                 % not a trigger; silent
     ;   admission:admit_reason(Repo, PR, Sha, Event, Config, Facts, Decision)
@@ -154,18 +154,24 @@ handle_decision(_Repo, _Polled, Event, _Config, refused(Reason), EventKey,
 
 %% resume_paused(+Options) is det.
 % Fresh-process resumption: for every held lease, re-run its graph run.
-% Completed runs are terminal (resume is refused by rlm_graph) so a stale
-% lease for a finished run is simply released.
+% A terminal outcome releases the lease inside finalize_run/3; a run that
+% pauses again keeps its lease because it is still resumable. A held lease
+% with no durable checkpoint (crashed before the first checkpoint) or a
+% refused resume (e.g. completed run) is released so the next poll can
+% re-admit the event.
 resume_paused(Options) :-
     init(Options),
-    journal:lease_runs(run(Repo, PR, Sha)),
+    forall(journal:lease_runs(run(Repo, PR, Sha)),
+           resume_lease_run(Repo, PR, Sha, Options)).
+
+resume_lease_run(Repo, PR, Sha, Options) :-
     run_id(Repo, PR, Sha, RunId),
     (   resume_one(RunId, Options)
-    ->  (   journal:lease_held(Repo, PR, Tok)
+    ->  true
+    ;   (   journal:lease_held(Repo, PR, Tok)
         ->  journal:lease_release(Repo, PR, Tok)
         ;   true
         )
-    ;   true
     ).
 
 resume_one(RunId, Options) :-
@@ -178,24 +184,24 @@ resume_one(RunId, Options) :-
     setup_call_cleanup(
         true,
         (   rlm:graph_checkpoint(Backend, RunId, Snapshot)
-        ->  State0 = Snapshot.state,
-            Data0 = State0.get(data),
-            Data1 = Data0.put(delegate, Delegate),
-            Data = Data1.put(api, Api),
-            State = State0.put(data, Data),
-            grant_from_state(State, Grant),
-            catch(rlm:graph_resume(Compiled, Backend, RunId, resumed, [],
-                                   Outcome0),
+        ->  get_dict(state, Snapshot, SnapshotState),
+            get_dict(data, SnapshotState, Data0),
+            get_dict(grant, Data0, Grant),
+            % graph_resume reloads its state from the durable checkpoint,
+            % never from a locally patched copy, so the fresh-process
+            % delegate/api closures must be delivered through the resume
+            % patch; patching only a local State would be silently lost
+            % and the run would re-pause on the stale delegate.
+            Data = Data0.put(delegate, Delegate).put(api, Api),
+            catch(rlm:graph_resume(Compiled, Backend, RunId,
+                                   resume(resumed, patch{data: Data}),
+                                   [], Outcome0),
                   GraphError,
                   Outcome0 = error(graph_error{exception:GraphError})),
             finalize_run(Grant, Outcome0, Options)
         ;   true
         ),
         rlm:graph_backend_close(Backend)).
-
-grant_from_state(State, Grant) :-
-    get_dict(data, State, Data),
-    get_dict(grant, Data, Grant).
 
 %% base_config(+Repo, +PR, +Options, -FileSpec) is det.
 % The .copilot file is read from the PR BASE branch HEAD only. A .copilot

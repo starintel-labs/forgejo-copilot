@@ -42,7 +42,7 @@ admit_reason(_Repo, _PR, _Sha, Event, _Config, _Facts, refused(bot)) :-
     \+ spec_actor_not_bot(Event).
 admit_reason(_Repo, _PR, _Sha, _Event, Config, _Facts, refused(disabled)) :-
     \+ spec_config_enabled(Config).
-admit_reason(_Repo, _PR, _Sha, _Event, _Config, _Facts, refused(not_triggered)) :-
+admit_reason(_Repo, _PR, _Sha, Event, Config, _Facts, refused(not_triggered)) :-
     spec_config_enabled(Config),
     spec_actor_not_bot(Event),
     \+ spec_trigger_allowed(Event, Config).

@@ -49,25 +49,34 @@ node(fetched, State, _Context, ok(patch{data:NewData})) :-
 node(partitioned, State, _Context, ok(patch{route:Route})) :-
     get_dict(grant, State.data, Grant),
     get_dict(route, Grant, Route).
-node(reviewed, State, _Context, ok(patch{findings:Findings})) :-
-    review_diff(State, Findings).
-node(deduped, State, _Context, ok(patch{findings:Kept})) :-
-    dedup_findings(State, Kept).
-node(posted, State, _Context, ok(patch{review:Review})) :-
-    post_review(State, Review).
-node(planned, State, _Context, ok(patch{plan:Plan})) :-
-    plan_task(State, Plan).
-node(branched, State, _Context, ok(patch{branch:Branch})) :-
-    create_task_branch(State, Branch).
-node(implemented, State, _Context, ok(patch{commits:Commits})) :-
-    implement_changes(State, Commits).
-node(tested, State, _Context, ok(patch{verified:Verdict})) :-
-    self_verify(State, Verdict).
+node(reviewed, State, _Context, ok(patch{data:Data})) :-
+    review_diff(State, Findings),
+    put_dict(findings, State.data, Findings, Data).
+node(deduped, State, _Context, ok(patch{data:Data})) :-
+    dedup_findings(State, Kept),
+    put_dict(findings, State.data, Kept, Data).
+node(posted, State, _Context, ok(patch{data:Data})) :-
+    post_review(State, Review),
+    put_dict(review, State.data, Review, Data).
+node(planned, State, _Context, ok(patch{data:Data})) :-
+    plan_task(State, Plan),
+    put_dict(plan, State.data, Plan, Data).
+node(branched, State, _Context, ok(patch{data:Data})) :-
+    create_task_branch(State, Branch),
+    put_dict(branch, State.data, Branch, Data).
+node(implemented, State, _Context, ok(patch{data:Data})) :-
+    implement_changes(State, Commits),
+    put_dict(commits, State.data, Commits, Data).
+node(tested, State, _Context, ok(patch{data:Data})) :-
+    self_verify(State, Verdict),
+    put_dict(verified, State.data, Verdict, Data).
 node(pushed, _State, _Context, ok(patch{})).
-node(pr_opened, State, _Context, ok(patch{pr_index:Index})) :-
-    open_pr(State, Index).
-node(replied, State, _Context, ok(patch{comment_id:Id})) :-
-    reply_with_citations(State, Id).
+node(pr_opened, State, _Context, ok(patch{data:Data})) :-
+    open_pr(State, Index),
+    put_dict(pr_index, State.data, Index, Data).
+node(replied, State, _Context, ok(patch{data:Data})) :-
+    reply_with_citations(State, Id),
+    put_dict(comment_id, State.data, Id, Data).
 
 % -- API hook (trusted host configuration, injected by the service) ----------
 
