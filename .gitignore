@@ -1,0 +1,4 @@
+state/run/
+result
+.direnv/
+*.log
