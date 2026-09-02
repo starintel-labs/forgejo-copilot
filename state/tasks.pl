@@ -1,6 +1,5 @@
 kb_task(t_spec, done, 'main-build', 'formal spec: spec/forgejo_copilot_spec.pl').
 kb_task(t_tests, in_progress, 'main-build', 'PlUnit suite porting invariants').
-kb_task(t_pack_forgejo, pending, 'main-build', 'forgejo tool pack (packs/forgejo.pl)').
 kb_task(t_pack_web, pending, 'main-build', 'web tool pack (packs/web.pl)').
 kb_task(t_service, pending, 'main-build', 'daemon + poll loop (src/service.pl)').
 kb_task(t_verify, pending, 'main-build', 'verify script: spec conformance (verify/verify.pl)').
@@ -10,6 +9,7 @@ kb_task(t_config, done, 'main-build', 'src/copilot_config.pl green 10/10').
 kb_task(t_gate, done, 'main-build', 'admission+journal+event green 21/21').
 kb_task(t_graph, done, 'main-build', 'rlm_graph realization green 8/8; gate 68/68').
 kb_task(t_models, done, 'main-build', 'model strategy + downgrade chain green 12/12').
+kb_task(t_pack_forgejo, done, 'main-build', 'forgejo+web packs green 15/15; ceilings match spec').
 kb_dep(t_tests, t_spec).
 kb_dep(t_config, t_tests).
 kb_dep(t_gate, t_config).

@@ -70,8 +70,8 @@ load_copilot :-
     use_module(fcopilot(model_strategy)),
     use_module(fcopilot(journal)),
     use_module(fcopilot(service)),
-    use_module(fcopilot(forgejo_tools)),
-    use_module(fcopilot(web_tools)).
+    use_module(fcopilot(forgejo)),
+    use_module(fcopilot(web)).
 
 load_all :-
     load_copilot.
