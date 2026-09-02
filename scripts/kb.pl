@@ -54,7 +54,7 @@ with_lock(Goal) :-
 lock_claim(Lock, _, S) :-
     catch(open(Lock, write, S, [create([exclusive])]), _, fail),
     !.
-lock_claim(Lock, 0, _) :- !,
+lock_claim(Lock, 0, S) :- !,
     format(user_error, 'kb: breaking stale lock~n', []),
     catch(delete_file(Lock), _, true),
     catch(open(Lock, write, S, [create([exclusive])]), _, fail).
@@ -75,7 +75,8 @@ lock_claim(Lock, N, S) :-
 kb_load :-
     kb_file(File),
     (   exists_file(File)
-    ->  setup_call_cleanup(
+    ->  kb_reset_dynamic,
+        setup_call_cleanup(
             open(File, read, S),
             (   repeat,
                 catch(read_term(S, Term, []),
@@ -92,6 +93,12 @@ kb_load :-
             close(S))
     ;   true
     ).
+
+kb_reset_dynamic :-
+    forall((kb_fact(F, A),
+            current_predicate(F/A)),
+           catch(abolish(F/A), _, true)),
+    forall(kb_fact(F, A), dynamic(F/A)).
 
 assert_kb_term(Term) :-
     (   kb_fact(Functor, Arity),
@@ -170,18 +177,22 @@ kb_set_task(Id, Status, Note) :-
 kb_add_dep(Task, Dep) :-
     with_lock((
         kb_load,
-        assertz(kb_dep(Task, Dep)),
-        kb_save,
-        format('kb: ~w depends on ~w~n', [Task, Dep])
-    )).
+        (   kb_dep(Task, Dep)
+        ->  format('kb: dep ~w -> ~w already recorded~n', [Task, Dep])
+        ;   assertz(kb_dep(Task, Dep)),
+            kb_save,
+            format('kb: ~w depends on ~w~n', [Task, Dep])
+        ))).
 
 kb_add_evidence(Task, Evidence, Provenance) :-
     with_lock((
         kb_load,
-        assertz(kb_evidence(Task, Evidence, Provenance)),
-        kb_save,
-        format('kb: evidence for ~w recorded~n', [Task])
-    )).
+        (   kb_evidence(Task, Evidence, Provenance)
+        ->  format('kb: evidence already recorded~n', [])
+        ;   assertz(kb_evidence(Task, Evidence, Provenance)),
+            kb_save,
+            format('kb: evidence for ~w recorded~n', [Task])
+        ))).
 
 kb_log(What) :-
     with_lock((
