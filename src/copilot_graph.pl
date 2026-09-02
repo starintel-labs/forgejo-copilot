@@ -167,12 +167,20 @@ finalize(Node, ok(Patch0), update(Patch)) :-
     ->  Patch = Patch1.put(status, done)
     ;   Patch = Patch1
     ).
-finalize(Node, failed(Reason),
+finalize(Node, failed(Reason0),
          update(patch{decision:failed,
                       status:failed,
                       error:Reason,
-                      log:["failed" - Node]})).
+                      log:["failed" - Node]})) :-
+    % thrown error terms may carry unbound context variables; the state
+    % patch must be ground (rlm_graph requirement).
+    ground_value(Reason0, Reason).
 finalize(_Node, interrupt(Reason, Patch), interrupt(Reason, Patch)).
+
+ground_value(Term, Ground) :-
+    copy_term(Term, Ground),
+    term_variables(Ground, Vars),
+    forall(member(V, Vars), V = '$unbound').
 
 terminal(posted).
 terminal(replied).

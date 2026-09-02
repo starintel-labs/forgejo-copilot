@@ -4,10 +4,12 @@
             attached/1,
             with_test_journal/1,
             tmp_journal/1,
+            open_at/1,
 
-            lease_acquire/3,
+            lease_acquire/4,
             lease_held/3,
             lease_release/3,
+            lease_runs/1,
             lease_facts/1,
 
             effect_record/4,
@@ -59,6 +61,13 @@ close :-
 attached(Path) :-
     effect_persist_attached(Path).
 
+%% open_at(+StateDir) is semidet.
+% Attach the journal that lives in the given state directory (used by
+% fixtures to inspect durable state between fresh-process phases).
+open_at(Dir) :-
+    format(atom(Path), '~w/journal.pl', [Dir]),
+    open(Path).
+
 %% -- test plumbing ----------------------------------------------------------
 tmp_journal(Path) :-
     current_prolog_flag(pid, Pid),
@@ -86,15 +95,23 @@ with_test_journal(Goal) :-
         )).
 
 %% -- lease: one per (repo, pr) with fencing ---------------------------------
-lease_acquire(Repo, PR, Token) :-
+% The lease carries the run identity (head sha) so a fresh process can
+% resume the paused graph run after a crash.
+lease_acquire(Repo, PR, Sha, Token) :-
     \+ lease_held(Repo, PR, _),
     uuid(Token),
     now(Now),
     key(lease, Repo-PR, CallId),
-    Request = lease_request{repo:Repo, pr:PR, token:Token},
+    Request = lease_request{repo:Repo, pr:PR, sha:Sha, token:Token},
     fingerprint(Request, Fp),
     effect_call(CallId, Fp, lease, Request, lease-Repo-PR, Now, Call),
     effect_persist_put_call(Call),
+    ensure_lease_index,
+    key(lease_index, idx, IndexId),
+    uuid(AddedId),
+    Added = lease_event{event_id:AddedId, kind:lease_added,
+                        repo:Repo, pr:PR, sha:Sha, token:Token},
+    effect_persist_append_event(IndexId, Added),
     !.
 
 lease_held(Repo, PR, Token) :-
@@ -109,7 +126,13 @@ lease_release(Repo, PR, Token) :-
     uuid(EventId),
     Event = lease_event{event_id:EventId, kind:lease_released,
                         token:Token},
-    effect_persist_append_event(CallId, Event).
+    effect_persist_append_event(CallId, Event),
+    ensure_lease_index,
+    key(lease_index, idx, IndexId),
+    uuid(RelId),
+    Released = lease_event{event_id:RelId, kind:lease_released_idx,
+                           repo:Repo, pr:PR, token:Token},
+    effect_persist_append_event(IndexId, Released).
 
 released_event(CallId, Token) :-
     effect_persist_events(CallId, Events),
@@ -117,10 +140,48 @@ released_event(CallId, Token) :-
     get_dict(kind, Event, lease_released),
     get_dict(token, Event, Token).
 
+ensure_lease_index :-
+    \+ (   key(lease_index, idx, CallId),
+           effect_persist_get_call(CallId, _Fp, _Call)
+       ),
+    !,
+    now(Now),
+    key(lease_index, idx, CallId),
+    Request = lease_index_request{},
+    fingerprint(Request, Fp),
+    effect_call(CallId, Fp, lease_index, Request, lease-index, Now, Call),
+    effect_persist_put_call(Call).
+ensure_lease_index.
+
 lease_facts(Facts) :-
     findall(lease(Repo, PR, Token),
             lease_held(Repo, PR, Token),
             Facts).
+
+%% lease_runs(-Runs) is nondet.
+% Held leases with their run identity, for fresh-process resumption.
+% Derived by replaying the append-only lease index so enumeration needs
+% no prior knowledge of the keys.
+lease_runs(run(Repo, PR, Sha)) :-
+    ensure_lease_index,
+    key(lease_index, idx, IndexId),
+    effect_persist_events(IndexId, Events),
+    foldl(lease_index_step, Events, [], Active0),
+    reverse(Active0, Active),
+    member(active(Repo, PR, Sha, _Token), Active).
+
+lease_index_step(E, ActiveIn, Active) :-
+    (   get_dict(kind, E, lease_added)
+    ->  Active = [active(E.repo, E.pr, E.sha, E.token) | ActiveIn]
+    ;   get_dict(kind, E, lease_released_idx)
+    ->  exclude(released_match(E), ActiveIn, Active)
+    ;   Active = ActiveIn
+    ).
+
+released_match(E, active(Repo, PR, _Sha, Token)) :-
+    get_dict(repo, E, Repo),
+    get_dict(pr, E, PR),
+    get_dict(token, E, Token).
 
 %% -- effect records: posted-effect identity keyed on (repo, pr, sha) --------
 record_effect(Repo, PR, Sha, Action, EffectId) :-
@@ -221,6 +282,8 @@ key(seen, EventKey, Id) :-
     format(atom(Id), 'seen:~w', [EventKey]).
 key(cursor, Repo, Id) :-
     format(atom(Id), 'cursor:~w', [Repo]).
+key(lease_index, idx, Id) :-
+    format(atom(Id), 'lease-index', []).
 
 fingerprint(Term, Hex) :-
     term_to_atom(Term, Atom),

@@ -8,15 +8,17 @@ Configured through State.data:
 
   * fail_at(Atom)  — the node at which the delegate reports failure
   * route(atom)    — which branch partitioned takes (task|review)
-  * interrupt_at(Atom, Reason) — pause at that node
-  * traced(...)    — appended to data.traced for observation
 */
 
 :- use_module(library(lists)).
 
 node(partitioned, State, _Context, ok(patch{route:Route})) :-
     !,
-    get_dict(route, State.data, Route).
+    (   get_dict(grant, State.data, Grant),
+        get_dict(route, Grant, Route)
+    ->  true
+    ;   get_dict(route, State.data, Route)
+    ).
 node(Node, State, _Context, failed(delegate_failed(Node))) :-
     get_dict(fail_at, State.data, Node),
     !.

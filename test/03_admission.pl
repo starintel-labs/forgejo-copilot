@@ -111,11 +111,12 @@ test(non_bot_actor_flag_guard) :-
 
 test(journal_lease_release_and_fence) :-
     journal:with_test_journal(
-        (   journal:lease_acquire('o/r', 7, Tok1),
+        (   journal:lease_acquire('o/r', 7, shaA, Tok1),
             journal:lease_held('o/r', 7, Tok1),
             \+ journal:lease_held('o/r', 7, other),
+            journal:lease_runs(run('o/r', 7, shaA)),
             journal:lease_release('o/r', 7, Tok1),
-            journal:lease_acquire('o/r', 7, Tok2),
+            journal:lease_acquire('o/r', 7, shaB, Tok2),
             Tok2 \= Tok1
         )).
 
@@ -123,7 +124,7 @@ test(journal_lease_survives_reopen) :-
     journal:tmp_journal(Path),
     setup_call_cleanup(
         journal:open(Path),
-        (   journal:lease_acquire('o/r', 7, Tok),
+        (   journal:lease_acquire('o/r', 7, shaX, Tok),
             journal:lease_held('o/r', 7, Tok),
             journal:close,
             journal:open(Path),

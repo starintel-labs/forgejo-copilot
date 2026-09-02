@@ -63,15 +63,14 @@ load_runtime :-
 
 load_copilot :-
     load_runtime,
-    use_module(fcopilot(copilot_spec_bridge)),
     use_module(fcopilot(copilot_config)),
     use_module(fcopilot(admission)),
     use_module(fcopilot(copilot_graph)),
     use_module(fcopilot(model_strategy)),
     use_module(fcopilot(journal)),
     use_module(fcopilot(service)),
-    use_module(fcopilot(forgejo)),
-    use_module(fcopilot(web)).
+    use_module(fcopilot(forgejo), []),
+    use_module(fcopilot(web), []).
 
 load_all :-
     load_copilot.

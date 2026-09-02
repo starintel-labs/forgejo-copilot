@@ -1,6 +1,7 @@
 :- module(forgejo_tools,
           [ load_tool_pack/2,
             handler/3,
+            get_file_content/5,
             forgejo_config/1,
             build_url/3,
             request_spec/5
@@ -23,6 +24,7 @@ pack.
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(http/http_open)).
+:- use_module(library(url)).
 :- use_module(library(http/json)).
 :- use_module(fcopilot_spec(forgejo_copilot_spec)).
 
@@ -362,6 +364,38 @@ request_spec(create_pr, Args, post, Path, Body) :-
 review_event(approve, 'APPROVED').
 review_event(request_changes, 'REQUEST_CHANGES').
 review_event(comment, 'COMMENT').
+
+% -- host-side helpers (not model tools) --------------------------------------
+
+%% get_file_content(+Owner, +Repo, +Branch, +Path, -Text) is semidet.
+% Trusted host read via the contents API (used for .copilot at the base
+% branch HEAD). Fails when the file does not exist or the API is
+% unconfigured. Never registered as a model tool.
+get_file_content(Owner, Repo, Branch, Path, Text) :-
+    forgejo_config(Config),
+    format(atom(EncodedPath), '~w', [Path]),
+    uri_encoded(path, EncodedPath, Encoded2),
+    format(atom(P), 'repos/~w/~w/contents/~w', [Owner, Repo, Encoded2]),
+    format(atom(Q), '~w?ref=~w', [P, Branch]),
+    build_url(Config.base, Q, Url),
+    auth_option(Config.token, AuthOption),
+    http_open(Url, Stream, [method(get), AuthOption]),
+    set_stream(Stream, encoding(utf8)),
+    catch(json_read_dict(Stream, Json), _, Json = none),
+    close(Stream),
+    Json \== none,
+    get_dict(content, Json, B64),
+    strip_base64_whitespace(B64, Clean),
+    atom_codes(Clean, B64Codes),
+    base64_decoded(B64Codes, TextCodes, []),
+    atom_codes(Text, TextCodes).
+
+strip_base64_whitespace(B64, Clean) :-
+    atom_codes(B64, Codes),
+    exclude(whitespace_code, Codes, CleanCodes),
+    atom_codes(Clean, CleanCodes).
+
+whitespace_code(C) :- memberchk(C, [10, 13, 32, 9]).
 
 % -- handler ------------------------------------------------------------------
 
