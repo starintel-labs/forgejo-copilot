@@ -32,6 +32,7 @@
         checks = {
           spec-verify = pkgs.runCommand "forgejo-copilot-spec-verify" {
             nativeBuildInputs = [ swiProlog prologRlm ];
+            SWIPL_PACK_PATH = prologRlmPack;
           } ''
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME"
@@ -41,11 +42,22 @@
 
           unit-tests = pkgs.runCommand "forgejo-copilot-unit-tests" {
             nativeBuildInputs = [ swiProlog prologRlm ];
+            SWIPL_PACK_PATH = prologRlmPack;
           } ''
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME"
             cd "${self}"
             swipl -q -s test/run_tests.pl && touch "$out"
+          '';
+
+          smoke = pkgs.runCommand "forgejo-copilot-smoke" {
+            nativeBuildInputs = [ swiProlog prologRlm ];
+            SWIPL_PACK_PATH = prologRlmPack;
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            cd "${self}"
+            swipl -q -s bin/copilot-demo.pl && touch "$out"
           '';
         };
       });
