@@ -68,6 +68,55 @@ Defaults: `model=fast`, `auto=true`, `tasks=true`; absent file → disabled.
 - `/review` — review the current PR diff.
 - `/ask <question>` — answer grounded in the issue context.
 
+## Running the service
+
+```sh
+FORGEJO_URL=https://git.example.com/api/v1 \
+FORGEJO_TOKEN=... \
+  swipl -s bin/copilot-service.pl -- \
+    --forever \
+    --repo owner/name \
+    [--repo other/repo] \
+    [--state-dir state/run] \
+    [--poll-seconds 30] \
+    [--model-step Module:Pred4]
+```
+
+- The daemon **fails fast** when `FORGEJO_URL`/`FORGEJO_TOKEN` are missing
+  or empty, or when no `--repo` is given (exit 1 with a message).
+- On start it **resumes paused runs** from the durable checkpoints in
+  `--state-dir` before polling, so a crashed run finishes exactly once.
+- Every poll cycle is wrapped in catch-and-continue: one bad cycle logs
+  an error and the loop keeps going.
+- `--once` resumes, polls once, and exits 0 (cron/CI friendly).
+- `--help` prints usage; unknown flags exit 2.
+
+### Smoke (credential-free)
+
+```sh
+nix develop
+swipl -q -s bin/copilot-demo.pl   # one mention through the pipeline, no env, no network
+```
+
+### Dogfood (self-host)
+
+This repository runs the bot on itself: a `.copilot` (`enabled: true`,
+`tasks: true`, `auto: false`) is committed at the repo root, so PRs
+against this repo come back through the flake checks:
+
+```sh
+# 1. run the service pointed at this repo
+FORGEJO_URL=... FORGEJO_TOKEN=... \
+  swipl -s bin/copilot-service.pl -- --forever --repo nsaspy/forgejo-copilot
+
+# 2. open an issue mentioning @copilot with a small task
+# 3. the bot branches under copilot/, pushes, opens a PR; CI (nix flake check)
+#    gates the merge — the human approves, never the bot
+```
+
+`auto: false` keeps opened PRs out of automatic review storms; ask for
+`/review` explicitly when you want one.
+
 ## Running tests
 
 ```sh

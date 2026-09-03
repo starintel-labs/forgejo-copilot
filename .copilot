@@ -1,0 +1,7 @@
+# forgejo-copilot self-host (dogfood) configuration.
+# Read from the PR base branch HEAD only; a .copilot inside a PR branch
+# never self-enables.
+enabled: true
+tasks: true
+auto: false
+model: fast

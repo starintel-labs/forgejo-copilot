@@ -46,6 +46,7 @@ All credentials come from the environment and are never logged.
 :- use_module(fcopilot(forgejo_event)).
 :- use_module(fcopilot(forgejo), []).
 :- use_module(fcopilot(journal)).
+:- use_module(fcopilot(repo_ref)).
 :- use_module(library(rlm)).
 :- use_module(library(lists)).
 :- use_module(library(option)).
@@ -394,13 +395,6 @@ api_call(get_file_content,
     forgejo_tools:get_file_content(Owner, Repo, Branch, Path, Text).
 api_call(Tool, Args, Value) :-
     forgejo_tools:handler(Tool, Args, Value).
-
-split_repo(Repo, Owner, Name) :-
-    atom_codes(Repo, Codes),
-    append(OwnerCodes, [0'/ | NameCodes], Codes),
-    !,
-    atom_codes(Owner, OwnerCodes),
-    atom_codes(Name, NameCodes).
 
 poll_time(Polled, T) :-
     (   get_dict(updated, Polled, T0), number(T0)

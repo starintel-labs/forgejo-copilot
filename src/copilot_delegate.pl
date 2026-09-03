@@ -39,6 +39,7 @@ Authority:
 :- use_module(fcopilot(model_strategy)).
 :- use_module(fcopilot(llm_text)).
 :- use_module(fcopilot(plan_items)).
+:- use_module(fcopilot(repo_ref)).
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(uuid)).
@@ -370,12 +371,3 @@ ensure_effect(State, Action, EffectId) :-
 make_uuid(U) :-
     uuid(Uuid0),
     format(atom(U), 'uid-~w', [Uuid0]).
-
-% -- shared helpers ----------------------------------------------------------
-
-split_repo(Repo, Owner, Name) :-
-    atom_codes(Repo, Codes),
-    append(OwnerCodes, [0'/ | NameCodes], Codes),
-    !,
-    atom_codes(Owner, OwnerCodes),
-    atom_codes(Name, NameCodes).
