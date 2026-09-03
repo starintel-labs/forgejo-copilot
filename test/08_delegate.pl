@@ -1,17 +1,50 @@
 /* Real delegate — unit tests with a fake Forgejo api hook and a fake
    model step. Deterministic: no network, no sleeps; the journal is a
    temp store per test. Covers: structured plan parsing (fences, cap,
-   empty, unexpected fields, unsafe paths), real file content fetch +
-   model rewrite + base64 push, review citation filtering,
-   request-changes-only reviews (never approve), empty-review skip,
-   effect idempotency, and reply citations. */
+   empty, unexpected fields, unsafe paths), reusable fence stripping,
+   real file content fetch + model rewrite + base64 push, run_id spend
+   threading, review citation filtering, request-changes-only reviews
+   (never approve), empty-review skip, effect idempotency, and reply
+   citations.
+
+   Fixture notes: every goal handed to journal:with_test_journal/1 is
+   module-qualified (user:) — the body predicates below live at file
+   level, and an unqualified goal would otherwise resolve in module
+   `journal`, where none of them exist. The fake hooks are likewise
+   handed to the delegate as user:-qualified closures because the
+   delegate module can only see them through the user context. */
 
 :- use_module('loader.pl').
 :- use_module(fcopilot_spec(forgejo_copilot_spec)).
 :- use_module(fcopilot(copilot_delegate)).
 :- use_module(fcopilot(journal)).
+:- use_module(fcopilot(llm_text)).
 :- use_module(library(base64)).
 :- use_module(library(lists)).
+
+:- begin_tests(llm_text).
+
+test(strip_fenced_with_language_tag) :-
+    llm_text:strip_code_fences("```json\n[{\"a\":1}]\n```", Out),
+    Out == "[{\"a\":1}]".
+
+test(strip_fenced_plain_preserves_inner_newlines) :-
+    llm_text:strip_code_fences("```\nline1\nline2\n\n```", Out),
+    Out == "line1\nline2\n".
+
+test(strip_tolerates_trailing_blank_lines) :-
+    llm_text:strip_code_fences("```\ncode\n```\n\n  \n", Out),
+    Out == "code".
+
+test(unfenced_text_unchanged) :-
+    llm_text:strip_code_fences("just plain text", Out),
+    Out == "just plain text".
+
+test(empty_fence_yields_empty) :-
+    llm_text:strip_code_fences("```\n\n```", Out),
+    Out == "".
+
+:- end_tests(llm_text).
 
 :- begin_tests(delegate_plan).
 
@@ -64,7 +97,42 @@ test(plan_rejects_unsafe_path) :-
 :- begin_tests(delegate_implement).
 
 test(implemented_fetches_and_pushes_content) :-
-    journal:with_test_journal(impl_body).
+    journal:with_test_journal(user:impl_body).
+
+test(implemented_rejects_empty_model_content) :-
+    journal:with_test_journal(user:impl_empty_body).
+
+:- end_tests(delegate_implement).
+
+:- begin_tests(delegate_review).
+
+test(review_filters_uncited_findings) :-
+    ModelText = "good line src/a.pl:12\nunsupported claim without file\n",
+    review_state(ModelText, State),
+    copilot_delegate:node(reviewed, State, ctx, ok(Patch)),
+    get_dict(data, Patch, Data),
+    get_dict(findings, Data, Findings),
+    Findings == ["good line src/a.pl:12"].
+
+test(posted_uses_request_changes_only) :-
+    journal:with_test_journal(user:review_post_body).
+
+test(posted_skips_when_no_findings) :-
+    journal:with_test_journal(user:review_skip_body).
+
+test(model_step_threads_run_id_for_spend) :-
+    journal:with_test_journal(user:spend_body).
+
+:- end_tests(delegate_review).
+
+:- begin_tests(delegate_reply).
+
+test(reply_cites_every_planned_path) :-
+    journal:with_test_journal(user:reply_body).
+
+:- end_tests(delegate_reply).
+
+% -- test bodies (file level: with_test_journal goals resolve here) ----------
 
 impl_body :-
     Content = "line1\nline2\n",
@@ -83,54 +151,47 @@ impl_body :-
     get_dict(branch, Push, Branch),
     atom_concat('copilot/', _, Branch).
 
-test(implemented_rejects_empty_model_content) :-
-    journal:with_test_journal(impl_empty_body).
-
 impl_empty_body :-
     impl_state("```\n\n```", State),
     copilot_delegate:node(branched, State, ctx, _),
     \+ copilot_delegate:node(implemented, State, ctx, ok(_)).
 
-:- end_tests(delegate_implement).
-
-:- begin_tests(delegate_review).
-
-test(review_filters_uncited_findings) :-
-    ModelText = "good line src/a.pl:12\nunsupported claim without file\n",
-    review_state(ModelText, State),
-    copilot_delegate:node(reviewed, State, ctx, ok(Patch)),
-    get_dict(data, Patch, Data),
-    get_dict(findings, Data, Findings),
-    Findings == ["good line src/a.pl:12"].
-
-test(posted_uses_request_changes_only) :-
-    journal:with_test_journal(review_post_body).
-
 review_post_body :-
     review_state("finding src/a.pl:1\n", State),
-    copilot_delegate:node(reviewed, State, ctx, _),
-    copilot_delegate:node(deduped, State, ctx, _),
-    copilot_delegate:node(posted, State, ctx, ok(_)),
+    copilot_delegate:node(reviewed, State, ctx, ok(P1)),
+    apply_patch(State, P1, State1),
+    copilot_delegate:node(deduped, State1, ctx, ok(P2)),
+    apply_patch(State1, P2, State2),
+    copilot_delegate:node(posted, State2, ctx, ok(_)),
     last_review(Review),
     get_dict(event, Review, request_changes).
-
-test(posted_skips_when_no_findings) :-
-    journal:with_test_journal(review_skip_body).
 
 review_skip_body :-
     review_state("nothing actionable here\n", State),
     copilot_delegate:node(reviewed, State, ctx, ok(P1)),
     get_dict(data, P1, D1),
     get_dict(findings, D1, []),
-    copilot_delegate:node(deduped, State, ctx, _),
+    apply_patch(State, P1, State1),
+    copilot_delegate:node(deduped, State1, ctx, _),
     review_calls(0).
 
-:- end_tests(delegate_review).
+% The graph engine applies each node's data patch before the next node;
+% these bodies replay that behavior directly.
+apply_patch(State, Patch, NewState) :-
+    get_dict(data, Patch, Data),
+    put_dict(data, State, Data, NewState).
 
-:- begin_tests(delegate_reply).
+% The trusted model step hook is delivered through the run data and the
+% delegate threads run:<repo>:<pr>:<sha> so the ledger records spend.
+spend_body :-
+    review_state("finding src/a.pl:1\n", State),
+    copilot_delegate:node(reviewed, State, ctx, ok(_)),
+    spend_recorded('run:o/r:7:sha1').
 
-test(reply_cites_every_planned_path) :-
-    journal:with_test_journal(reply_body).
+spend_recorded(RunId) :-
+    rlm_effect_persist:effect_call_record(_CallId, _Fp, model_call,
+        spend_request{run:RunId, role:_Role, provider:_Provider, model:_Model},
+        spend-RunId, _Created).
 
 reply_body :-
     reply_state(State),
@@ -138,8 +199,6 @@ reply_body :-
     last_comment(Comment),
     get_dict(body, Comment, Body),
     sub_string(Body, _, _, _, 'src/a.pl').
-
-:- end_tests(delegate_reply).
 
 % -- fake Forgejo hook (records into dynamic predicates) -----------------------
 
@@ -155,7 +214,7 @@ fake_api(get_issue, Args,
     !.
 fake_api(get_comment_thread, _, _{comments:[]}) :- !.
 fake_api(get_pr, _, _) :- !, fail.
-fake_api(get_file_content, _{path:'src/a.pl'}, _{text:"old content\n"}) :- !.
+fake_api(get_file_content, _, _{text:"old content\n"}) :- !.
 fake_api(create_branch, _, branch{name:'copilot/task-7'}) :- !.
 fake_api(push_commit, Args, _{commit_sha:sha(_Path)}) :-
     !,
@@ -186,33 +245,40 @@ fake_model(Text, _Step, _Request, _Extra, ok(model_response{content:Text})).
 % -- state builders --------------------------------------------------------------
 
 grant_state(ModelText, State) :-
-    State = graph_state{data:run_data{grant:test_grant,
-                                      api:fake_api,
-                                      model_step:fake_model(ModelText)},
+    test_grant(Grant),
+    State = graph_state{data:run_data{grant:Grant,
+                                      api:(user:fake_api),
+                                      model_step:(user:fake_model(ModelText))},
                         status:running}.
 
 impl_state(ModelText, State) :-
-    State0 = graph_state{data:run_data{grant:test_grant,
-                                       api:fake_api,
-                                       model_step:fake_model(ModelText),
-                                       base_branch:'main'},
+    test_grant(Grant),
+    State0 = graph_state{data:run_data{grant:Grant,
+                                       api:(user:fake_api),
+                                       model_step:(user:fake_model(ModelText)),
+                                       base_branch:'main',
+                                       plan:[change{path:'src/a.pl',
+                                                    change:'fix the parser',
+                                                    message:'fix'}]},
                          status:running},
     copilot_delegate:node(branched, State0, ctx, ok(BPatch)),
     get_dict(data, BPatch, BData),
     put_dict(data, State0, BData, State).
 
 review_state(ModelText, State) :-
-    State = graph_state{data:run_data{grant:test_grant,
-                                      api:fake_api,
-                                      model_step:fake_model(ModelText),
+    test_grant(Grant),
+    State = graph_state{data:run_data{grant:Grant,
+                                      api:(user:fake_api),
+                                      model_step:(user:fake_model(ModelText)),
                                       diff:"diff --git a/src/a.pl\n",
                                       files:[file{filename:'src/a.pl'}],
                                       comments:[]},
                         status:running}.
 
 reply_state(State) :-
-    State = graph_state{data:run_data{grant:test_grant,
-                                      api:fake_api,
+    test_grant(Grant),
+    State = graph_state{data:run_data{grant:Grant,
+                                      api:(user:fake_api),
                                       plan:[change{path:'src/a.pl',
                                                    change:'fix',
                                                    message:'m'}]},

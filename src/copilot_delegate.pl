@@ -10,8 +10,8 @@ follow the delegate protocol: ok(Patch) | failed(Error) | interrupt(R, P).
 State.data is a dict (extended node-by-node through `data` patches):
 
     run_data{grant:grant{repo,pr,sha,event,route},
-             config:config{...},                  effective .copilot
              api:callable(Tool, Args, Value),     trusted API hook
+             model_step:callable(Step,Req,Ex,Out) trusted model step hook
              base_branch:atom,                    PR base (or default)
              issue:dict, pull:dict,               filled at fetched
              diff:string, files:list,             filled at fetched
@@ -37,9 +37,12 @@ Authority:
 :- use_module(fcopilot_spec(forgejo_copilot_spec)).
 :- use_module(fcopilot(journal)).
 :- use_module(fcopilot(model_strategy)).
+:- use_module(fcopilot(llm_text)).
+:- use_module(fcopilot(plan_items)).
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(uuid)).
+:- use_module(library(base64)).
 
 node(received, _State, _Context, ok(patch{})).
 node(config_checked, _State, _Context, ok(patch{})).
@@ -132,20 +135,17 @@ review_diff(State, Findings) :-
     ).
 
 % Ungrounded findings are dropped (spec_reply_requires_citation): a finding
-% line is kept only when it cites one of the changed file paths.
+% line is kept only when it cites one of the changed file paths. Findings
+% stay as text lines (strings).
 findings_with_citations(Text, Files, Findings) :-
     split_string(Text, "\n", "\r", Lines0),
-    include(cites_file(Files), Lines0, Lines),
-    maplist(string_atom, Lines, Findings).
+    include(cites_file(Files), Lines0, Findings).
 
 cites_file(Files, Line) :-
     member(File, Files),
     get_dict(filename, File, Path),
     text_to_string(Path, PathStr),
     sub_string(Line, _, _, _, PathStr).
-
-string_atom(S, A) :-
-    atom_string(A, S).
 
 % -- deduped -----------------------------------------------------------------
 
@@ -163,7 +163,6 @@ new_finding(Comments, Finding) :-
 % -- posted ------------------------------------------------------------------
 
 post_review(State, Review) :-
-    get_dict(grant, State.data, Grant),
     get_dict(findings, State.data, Kept),
     (   Kept == []
     ->  Review = review{posted:none}
@@ -184,26 +183,28 @@ format_review_body(Findings, Text) :-
 format_finding(F, F).
 
 % -- planned -----------------------------------------------------------------
+% A rejected plan FAILS the clause (never a throw and never a silent ok):
+% the graph routes a failing handler to the failed terminal, which posts
+% the visible failure comment.
 
 plan_task(State, Plan) :-
-    get_dict(grant, State.data, Grant),
-    get_dict(issue, State.data, Issue),
-    (   get_dict(body, Issue, Body) -> true ; Body = "" ),
+    issue_body(State, Body),
     model_call(State, chat,
                [message{role:system,
-                        content:"Plan the task. Reply with a JSON list of {path, change, message} objects."},
+                         content:"Plan the task. Reply with ONE fenced JSON array of {path, change, message} objects: path is a repo-relative file path, change describes the edit, message is the commit message. At most 16 items."},
                 message{role:user,
-                        content:"Execute the task requested on this issue."},
+                         content:"Execute the task requested on this issue."},
                 message{role:user, content:Body}],
                ModelText),
-    (   parse_plan_items(ModelText, Plan)
-    ->  true
-    ;   throw(plan_not_parseable)
-    ),
-    length(Plan, N),
-    N =< 16.
+    plan_items:max_plan_items(MaxItems),
+    plan_items:decode_plan(ModelText, MaxItems, Plan).
 
-parse_plan_items(_Text, []).
+issue_body(State, Body) :-
+    (   get_dict(issue, State.data, Issue),
+        get_dict(body, Issue, Body0)
+    ->  Body = Body0
+    ;   Body = ""
+    ).
 
 % -- branched ----------------------------------------------------------------
 
@@ -222,25 +223,48 @@ create_task_branch(State, Branch) :-
         _BranchResp).
 
 % -- implemented -------------------------------------------------------------
+% Each plan item becomes one commit: the ORIGINAL file is fetched from the
+% base branch, the model produces the complete new content, the reply is
+% fence-stripped and required non-empty, then pushed base64-encoded.
 
 implement_changes(State, Commits) :-
     get_dict(plan, State.data, Plan),
     maplist(implement_one(State), Plan, Commits).
 
-implement_one(State, change{path:Path, message:Message},
+implement_one(State, change{path:Path, change:Change, message:Message},
               commit{path:Path, sha:Sha}) :-
     format(atom(Action), 'push:~w', [Path]),
     ensure_effect(State, Action, _IntentId),
     get_dict(branch, State.data, Branch),
     get_dict(grant, State.data, Grant),
     split_repo(Grant.repo, Owner, Name),
-    content_for(State, Path, ContentB64),
+    content_for(State, Path, Change, ContentB64),
     api(State, push_commit,
         _{owner:Owner, repo:Name, branch:Branch, path:Path,
           content_b64:ContentB64, message:Message},
         _{commit_sha:Sha}).
 
-content_for(_State, _Path, 'Q29udGVudA==').
+%% content_for(+State, +Path, +Change, -ContentB64) is semidet.
+content_for(State, Path, Change, ContentB64) :-
+    original_content(State, Path, Original),
+    format(atom(Instruction), 'Rewrite the file ~w to apply this change: ~w', [Path, Change]),
+    model_call(State, chat,
+               [message{role:system,
+                         content:"Reply with the complete new file content inside ONE fenced code block. No prose, no explanation, no partial diff."},
+                message{role:user, content:Instruction},
+                message{role:user, content:Original}],
+               ModelText),
+    llm_text:strip_code_fences(ModelText, NewContent),
+    llm_text:nonempty_text(NewContent),
+    base64_encoded(NewContent, ContentB64, []).
+
+original_content(State, Path, Original) :-
+    get_dict(grant, State.data, Grant),
+    get_dict(base_branch, State.data, BaseBranch),
+    split_repo(Grant.repo, Owner, Name),
+    api(State, get_file_content,
+        _{owner:Owner, repo:Name, branch:BaseBranch, path:Path},
+        _{text:Original}).
 
 % -- tested ------------------------------------------------------------------
 
@@ -290,26 +314,48 @@ plan_citation(change{path:Path, change:Change, message:Message}, Line) :-
     format(atom(Line), '- `~w`: ~w — ~w', [Path, Change, Message]).
 
 % -- model access ------------------------------------------------------------
+% The model is reached through model_strategy's tier chain. The concrete
+% HTTP step is overridable per run via the trusted `data.model_step` hook
+% (Pred4, same shape as model_strategy's step_call option); every attempt
+% threads run:<repo>:<pr>:<sha> so the journal records provider + model
+% spend for the run. The effective .copilot config travels in the grant.
 
 model_call(State, Kind, Messages, ModelText) :-
-    get_dict(config, State.data, Config),
-    model_strategy:effective_tier(Kind, Config, TierName),
-    model_strategy:call_tier(TierName,
+    tier_options(State, Kind, Tier, Options),
+    model_strategy:call_tier(Tier,
                              model_request{messages:Messages,
                                            options:_{max_tokens:2048,
                                                      temperature:0.2}},
-                             [],
+                             Options,
                              TierResult),
-    (   TierResult = ok(response{response:model_response{content:ModelText}})
-    ->  true
-    ;   TierResult = ok(response{response:Response})
-    ->  (   get_dict(content, Response, ModelText)
-        ->  true
-        ;   atom_json_dict(ModelText, Response, [])
-        )
-    ;   TierResult = failed(Err, _Step)
-    ->  throw(model_failed(Err))
+    tier_content(TierResult, ModelText).
+
+tier_options(State, Kind, Tier, [run_id(RunId) | StepOptions]) :-
+    get_dict(grant, State.data, Grant),
+    get_dict(config, Grant, Config),
+    model_strategy:effective_tier(Kind, Config, Tier),
+    grant_run_id(Grant, RunId),
+    model_step_options(State, StepOptions).
+
+model_step_options(State, [step_call(ModelStep)]) :-
+    get_dict(model_step, State.data, ModelStep),
+    !.
+model_step_options(_State, []).
+
+grant_run_id(Grant, RunId) :-
+    format(atom(RunId), 'run:~w:~w:~w', [Grant.repo, Grant.pr, Grant.sha]).
+
+tier_content(ok(TierResponse), ModelText) :-
+    get_dict(response, TierResponse, Response),
+    (   Response = model_response{content:Content}
+    ->  text_to_string(Content, ModelText)
+    ;   is_dict(Response),
+        get_dict(content, Response, Content)
+    ->  text_to_string(Content, ModelText)
+    ;   atom_json_dict(ModelText, Response, [])
     ).
+tier_content(failed(Error, _Step), _ModelText) :-
+    throw(model_failed(Error)).
 
 % -- durable effect records --------------------------------------------------
 
@@ -324,9 +370,6 @@ ensure_effect(State, Action, EffectId) :-
 make_uuid(U) :-
     uuid(Uuid0),
     format(atom(U), 'uid-~w', [Uuid0]).
-
-now_float(F) :-
-    get_time(F).
 
 % -- shared helpers ----------------------------------------------------------
 
