@@ -224,16 +224,28 @@ inject_model_step(Data, ModelStep, Data.put(model_step, ModelStep)).
 %% base_config(+Repo, +PR, +Options, -FileSpec) is det.
 % The .copilot file is read from the PR BASE branch HEAD only. A .copilot
 % inside the PR branch never self-enables (spec). For an issue (no PR),
-% the repo's default branch head is used instead.
+% the configured config branch is used (service option config_branch/1,
+% CLI --config-branch), defaulting to the repo's default branch head.
 base_config(Repo, PR, Options, FileSpec) :-
     (   base_branch(Repo, PR, Options, BaseBranch)
     ->  true
-    ;   default_branch(BaseBranch)
+    ;   issue_config_branch(Options, BaseBranch)
     ),
     copilot_file_content(Repo, BaseBranch, Options, Text),
     !,
     FileSpec = Text.
 base_config(_Repo, _PR, _Options, none).
+
+%% issue_config_branch(+Options, -Branch) is det.
+% Branch whose HEAD carries .copilot for issue (no-PR) events, and the
+% branch task runs branch from when no PR exists: the config_branch
+% service option when given, else the repo's default branch. This is
+% what lets the bot work against any branch without merging first.
+issue_config_branch(Options, Branch) :-
+    (   option(config_branch(Branch), Options)
+    ->  true
+    ;   default_branch(Branch)
+    ).
 
 default_branch(Branch) :-
     (   getenv('COPILOT_DEFAULT_BRANCH', B), B \== ''
@@ -297,7 +309,7 @@ run_task(Grant, Options) :-
 base_branch_required(Grant, Options, BaseBranch) :-
     (   base_branch(Grant.repo, Grant.pr, Options, BaseBranch)
     ->  true
-    ;   default_branch(BaseBranch)
+    ;   issue_config_branch(Options, BaseBranch)
     ).
 
 run_id(Repo, PR, Sha, RunId) :-

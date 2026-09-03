@@ -19,6 +19,7 @@ Command line:
                                         --repo Owner/Name (repeatable)
                                         [--state-dir Dir]
                                         [--poll-seconds N]
+                                        [--config-branch Branch]
                                         [--model-step Module:Pred4]
                                         [--help]
 
@@ -68,6 +69,8 @@ flag_option('--state-dir', [Value | Rest], state_dir(Dir), Rest) :-
 flag_option('--poll-seconds', [Value | Rest], poll_seconds(N), Rest) :-
     atom_number(Value, N),
     N > 0.
+flag_option('--config-branch', [Value | Rest], config_branch(Branch), Rest) :-
+    atom_string(Branch, Value).
 flag_option('--model-step', [Value | Rest], model_step(Callable), Rest) :-
     term_string(Callable, Value).
 flag_option('--repo', [Value | Rest], repos([Repo]), Rest) :-
@@ -154,5 +157,10 @@ daemon_main(Argv) :-
 print_usage :-
     format('usage: copilot-service [--once|--forever] --repo Owner/Name~n'),
     format('                      [--state-dir Dir] [--poll-seconds N]~n'),
+    format('                      [--config-branch Branch]~n'),
     format('                      [--model-step Module:Pred4]~n'),
-    format('env:   FORGEJO_URL, FORGEJO_TOKEN (required, never logged)~n').
+    format('env:   FORGEJO_URL, FORGEJO_TOKEN (required, never logged)~n'),
+    format('~n--config-branch: branch whose HEAD carries .copilot for issue~n'),
+    format('events and that task runs branch from when no PR exists~n'),
+    format('(default: the repo''s default branch). PR events always read~n'),
+    format('.copilot from the PR base branch HEAD.~n').

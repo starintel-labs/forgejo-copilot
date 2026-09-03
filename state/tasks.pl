@@ -13,6 +13,7 @@ kb_task(t_smoke, done, 'resume-continuation', 'bin/copilot-demo.pl credential-fr
 kb_task(t_delegate, done, 'dogfood-buildout', 'un-parked and green 18/18: reusable llm_text/plan_items decode, model_step hook, run_id spend threading, content_for fetch/rewrite/push, graph clause-failure -> failed terminal; gate 115/115 @ ac56c0f').
 kb_task(t_daemon, done, 'dogfood-buildout', 'bin/copilot-service.pl --once/--forever + src/copilot_daemon.pl; env fail-fast proven (exit 1 without FORGEJO_URL); resume on start; 09_daemon.pl 13/13 @ 966bd0c').
 kb_task(t_selfhost, done, 'dogfood-buildout', '.copilot (enabled:true, tasks:true, auto:false, model:fast) committed; 09 selfhost tests assert parse; README dogfood runbook @ 966bd0c').
+kb_task(t_anybranch, done, 'dogfood-buildout', 'service:base_config/base_branch_required use config_branch for no-PR events; daemon --config-branch flag; 09_daemon 18/18; gate 133/133').
 kb_dep(t_tests, t_spec).
 kb_dep(t_config, t_tests).
 kb_dep(t_gate, t_config).
@@ -33,6 +34,7 @@ kb_event(1788387445.809784, 'resume-continuation', 'continuation session started
 kb_event(1788393882.4907691, 'resume-continuation', 'tasks t_restart/t_verify/t_smoke done; gate 97/97; flake checks green').
 kb_event(1788404943.462933, 'resume-continuation', 'dogfood build-out paused at t_delegate; hand-off PR opened').
 kb_event(1788409072.0634193, 'dogfood-buildout', 'dogfood build-out: t_delegate/t_daemon/t_selfhost done; gate 128/128; verify 18/18; smoke exit 0; reusable decode layer (llm_text, plan_items, repo_ref) is portable back to prolog-rlm').
+kb_event(1788414965.6509726, 'dogfood-buildout', 'any-branch support: issue events read .copilot from --config-branch (default main); run base branch follows it; PR events unchanged (base HEAD only, spec rule intact)').
 kb_evidence(t_spec, '30/30 invariant battery pass', 'Prolog MCP session cb0808bce0d1').
 kb_evidence(t_restart, 'gate 96/96 incl 07; 3-process pause/resume/re-poll exactly-once', 'swipl -q -s test/run_tests.pl @ e413c53').
 kb_evidence(t_verify, '18/18 checks pass, exit 0; drift detection proven on chain order', 'swipl -q -s verify/verify.pl @ db4efbe').

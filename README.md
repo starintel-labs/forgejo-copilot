@@ -79,6 +79,7 @@ FORGEJO_TOKEN=... \
     [--repo other/repo] \
     [--state-dir state/run] \
     [--poll-seconds 30] \
+    [--config-branch Branch] \
     [--model-step Module:Pred4]
 ```
 
@@ -90,6 +91,18 @@ FORGEJO_TOKEN=... \
   an error and the loop keeps going.
 - `--once` resumes, polls once, and exits 0 (cron/CI friendly).
 - `--help` prints usage; unknown flags exit 2.
+
+**Working on any branch.** PR events read `.copilot` from the PR base
+branch HEAD (any branch can be a merge target). For issue events (no
+PR), `.copilot` is read from `--config-branch` (default: the repo's
+default branch), and task runs branch from that same branch — so the
+bot can operate on a feature branch before anything is merged:
+
+```sh
+FORGEJO_URL=... FORGEJO_TOKEN=... \
+  swipl -s bin/copilot-service.pl -- --forever --repo nsaspy/forgejo-copilot \
+    --config-branch handoff/dogfood-plan
+```
 
 ### Smoke (credential-free)
 

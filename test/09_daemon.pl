@@ -46,6 +46,11 @@ test(model_step_parses_to_callable_term) :-
                                 '--repo', 'o/r'], Options),
     option(model_step(my_mod:my_step/4), Options).
 
+test(config_branch_flag) :-
+    copilot_daemon:cli_options(['--config-branch', 'feature/cfg',
+                                '--repo', 'o/r'], Options),
+    option(config_branch('feature/cfg'), Options).
+
 test(rejects_unknown_flag) :-
     \+ copilot_daemon:cli_options(['--bogus'], _).
 
@@ -92,6 +97,42 @@ test(repo_copilot_uses_fast_model) :-
     get_dict(model, Config, fast).
 
 :- end_tests(selfhost_config).
+
+:- begin_tests(service_config_branch).
+
+% Issue (no-PR) events read .copilot from the configured branch, so the
+% bot works against any branch without merging first. PR events keep the
+% spec rule: base branch HEAD only.
+test(issue_config_branch_reads_named_branch) :-
+    service:base_config('o/r', 7,
+                        [api(user:branch_api), config_branch('feature/cfg')],
+                        Text),
+    copilot_config:parse(Text, Config),
+    get_dict(enabled, Config, true).
+
+test(issue_config_branch_defaults_when_option_absent) :-
+    service:base_config('o/r', 7, [api(user:branch_api)], none).
+
+test(issue_run_base_branch_follows_config_branch) :-
+    service:base_branch_required(grant{repo:'o/r', pr:7},
+                                 [api(user:branch_api),
+                                  config_branch('feature/cfg')],
+                                 'feature/cfg').
+
+test(issue_run_base_branch_defaults_to_default_branch) :-
+    service:base_branch_required(grant{repo:'o/r', pr:7},
+                                 [api(user:branch_api)],
+                                 'main').
+
+:- end_tests(service_config_branch).
+
+% Trusted api double: .copilot exists ONLY on feature/cfg; there is no
+% PR (get_pr fails), so both lookups go through the issue path.
+branch_api(get_file_content, Args, _{text:"enabled: true\n"}) :-
+    get_dict(branch, Args, 'feature/cfg'),
+    !.
+branch_api(get_file_content, _, _) :- !, fail.
+branch_api(get_pr, _, _) :- !, fail.
 
 % The env gate must be deterministic regardless of the caller's shell:
 % both branches are forced explicitly and restored afterwards.
