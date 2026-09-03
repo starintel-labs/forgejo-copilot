@@ -52,13 +52,19 @@ is carried over.
     default branch); `model_step(Pred4)` service option is injected into
     run data and re-injected on fresh-process resume (alongside
     delegate/api).
-- t_daemon (966bd0c): `src/copilot_daemon.pl` +
+- t_daemon (966bd0c, 9381bec): `src/copilot_daemon.pl` +
   `bin/copilot-service.pl`. CLI: `--once|--forever` (last wins),
-  repeatable `--repo`, `--state-dir`, `--poll-seconds`, `--model-step`
-  term, `--help`. Fail-fast env gate (`FORGEJO_URL`/`FORGEJO_TOKEN`
-  non-empty, >= 1 repo) — proven: missing env exits 1 with a message.
-  `resume_paused` on start; per-cycle catch-and-continue loop. Tests
-  drive `cli_options`/`env_options` directly (deterministic; 09: 13/13).
+  repeatable `--repo`, `--state-dir`, `--poll-seconds`, `--config-branch`,
+  `--model-step` term, `--help`. Fail-fast env gate
+  (`FORGEJO_URL`/`FORGEJO_TOKEN` non-empty, >= 1 repo) — proven: missing
+  env exits 1 with a message. `resume_paused` on start; per-cycle
+  catch-and-continue loop. Tests drive `cli_options`/`env_options`
+  directly (deterministic; 09: 18/18).
+- t_anybranch (9381bec): issue (no-PR) events read `.copilot` from
+  `--config-branch` (default: repo default branch) and task runs branch
+  from the same branch — the bot works on a feature branch without
+  merging first. PR events unchanged (PR base HEAD only; the spec's
+  no-self-enable rule stays intact).
 - t_selfhost (966bd0c): `.copilot` committed at repo root
   (enabled:true, tasks:true, auto:false, model:fast) + README dogfood
   runbook. `09_daemon.pl` asserts the file parses into exactly that
@@ -91,8 +97,8 @@ is carried over.
 
 ## What "ready" looks like now (dogfood)
 
-1. Point the daemon at its own repo:
-   `FORGEJO_URL=... FORGEJO_TOKEN=... swipl -s bin/copilot-service.pl -- --forever --repo nsaspy/forgejo-copilot`
+1. Point the daemon at its own repo (any branch — no merge needed):
+   `FORGEJO_URL=... FORGEJO_TOKEN=... swipl -s bin/copilot-service.pl -- --forever --repo nsaspy/forgejo-copilot --config-branch handoff/dogfood-plan`
 2. Open an issue mentioning @copilot with a small task; the bot branches
    under `copilot/`, pushes, opens a PR; `nix flake check` gates the
    merge; the human approves (never the bot).
