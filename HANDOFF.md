@@ -1,8 +1,8 @@
-# HANDOFF — forgejo-copilot, dogfood build-out (in flight)
+# HANDOFF — forgejo-copilot, dogfood build-out complete (main path)
 
-Written fresh at the end of the resume-fix/verification session. Every
-claim below is backed by a live run or a KB evidence line — nothing is
-carried over from the previous (deleted) hand-off.
+Written at the end of the dogfood session. Every claim is backed by a
+live run recorded in `.prolog/facts.kb` or a KB evidence line — nothing
+is carried over.
 
 ## How to work here
 
@@ -12,106 +12,103 @@ carried over from the previous (deleted) hand-off.
 - Focused run: `swipl -q -s test/run_one.pl -- <file>.pl`
 - Conformance gate: `swipl -q -s verify/verify.pl` (exit 1 on drift).
 - Smoke: `swipl -q -s bin/copilot-demo.pl` (exit 0, credential-free).
-- Everything wired as flake checks: `nix flake check` (3/3 green;
+- Daemon smoke: `swipl -q -s bin/copilot-service.pl -- --help` (exit 0);
+  without env it fails fast (exit 1).
+- Everything wired as flake checks: `nix flake check` (all green;
   `SWIPL_PACK_PATH` is set by the checks; `flake.lock` is committed).
 - Task/deps KB: `state/tasks.pl` via `scripts/kb.pl`
   (`KB_SESSION=<name>`). Commit KB changes.
 - Commit style: imperative, prefix `copilot: ...`. TDD; deterministic
   tests only (no sleeps; wait-timeout+kill for subprocess fixtures).
 
-## DONE and verified (main @ 27b3dff, pushed)
+## DONE this session (handoff/dogfood-plan @ 966bd0c)
 
-- Fresh-process resume fixed (e413c53): `resume_one/2` delivers the
-  fresh-process `delegate`/`api` through the resume patch
-  (`resume(resumed, patch{data: ...})`) — `graph_resume` reloads state
-  from the durable checkpoint and ignores locally patched state. Lease
-  kept on re-pause, released on refusal/missing checkpoint. Gate 96/96.
-- Conformance gate `verify/verify.pl` (db4efbe): 18 checks — graph vs
-  `spec_transition` (end+status mapping), failure routes, end absorbing,
-  tool schemas vs `spec_tool/4` (names/effects/ceilings, no
-  shell/process/arbitrary-network capability), authority absolutes,
-  model tiers + downgrade chain. It caught and fixed a real drift:
-  `tier_chain` tried `fallback_endpoint` FIRST; spec order is
-  primary -> alternate -> fallback -> visible failure.
-- Smoke (d8ea39c): `bin/copilot-demo.pl` + `bin/demo_delegate.pl` drive
-  one mention through admit -> graph -> done with fake api; re-poll is
-  refused (already_done). No env, no network.
-- KB: t_restart, t_verify, t_smoke all `done` with evidence lines.
+- t_delegate (ac56c0f): 08 un-parked and green 18/18; full gate 115/115.
+  - Reusable decode layer (PORTABLE back to prolog-rlm):
+    `src/llm_text.pl` — `strip_code_fences/2` (whole-text fence with
+    optional tag; inner content byte-exact), `structured_from_text/3`
+    (fence strip -> `rlm_chain` closed-schema decode+validate; rejection
+    is FAILURE, never an exception), `nonempty_text/1` (string-correct
+    empty check — beware `Str \== ''` vs string `""`).
+    `src/plan_items.pl` — the "expert" template: text -> fence strip ->
+    closed schema -> authority checks (non-empty, cap 16, safe relative
+    path) -> normalized `change{path,change,message}` atoms.
+    `src/repo_ref.pl` — shared Owner/Name parser (was 3 copies).
+  - `copilot_delegate:model_call` reads the trusted `model_step` Pred4
+    from run data (same shape as `model_strategy` step_call), threads
+    `run:<repo>:<pr>:<sha>` so spend lands in the journal (proven by
+    test: `rlm_effect_persist:effect_call_record(..., spend-RunId, ...)`).
+    Config comes from `State.data.grant.config` (the grant carries the
+    effective .copilot config). With no hook in data it uses the real
+    HTTP tier chain.
+  - `plan_task` FAILS (never throws) on invalid/empty/over-cap/
+    unexpected-field/unsafe-path plans; `copilot_graph:node_step` routes
+    a failing delegate clause to the failed terminal, so rejection still
+    ends in the visible failure comment.
+  - `content_for`: fetches the ORIGINAL file from the base branch via
+    the api hook, rewrites via model, strips fences, requires
+    non-empty, pushes base64.
+  - `service`: `base_branch` is ALWAYS in run data (PR base else
+    default branch); `model_step(Pred4)` service option is injected into
+    run data and re-injected on fresh-process resume (alongside
+    delegate/api).
+- t_daemon (966bd0c): `src/copilot_daemon.pl` +
+  `bin/copilot-service.pl`. CLI: `--once|--forever` (last wins),
+  repeatable `--repo`, `--state-dir`, `--poll-seconds`, `--model-step`
+  term, `--help`. Fail-fast env gate (`FORGEJO_URL`/`FORGEJO_TOKEN`
+  non-empty, >= 1 repo) — proven: missing env exits 1 with a message.
+  `resume_paused` on start; per-cycle catch-and-continue loop. Tests
+  drive `cli_options`/`env_options` directly (deterministic; 09: 13/13).
+- t_selfhost (966bd0c): `.copilot` committed at repo root
+  (enabled:true, tasks:true, auto:false, model:fast) + README dogfood
+  runbook. `09_daemon.pl` asserts the file parses into exactly that
+  config.
+- Gate at HEAD: 128/128; verify 18/18; demo exit 0; `nix flake check`
+  all green.
 
-## The one parked red: test/08_delegate.pl.known-red (t_delegate)
+## SWI-Prolog gotchas that cost time this session (do not re-derive)
 
-In-flight TDD start for the REAL delegate (`src/copilot_delegate.pl`).
-Status: 5/12 green when run standalone. Remaining failures share one
-fixture bug and then need implementation work:
+- Dict unification requires the SAME key set:
+  `_{path:P} = _{owner:O,repo:R,branch:B,path:P}` FAILS. Fake api hooks
+  must either bind args with a variable or repeat the full key set.
+  Same for response patterns: use `get_dict/3` against
+  `ok(response{...})` instead of subset dict patterns.
+- `Str \== ''` compares against the empty ATOM; a string `""` is never
+  equal to it. Compare against `""`.
+- `atomic_list_concat/3` over string elements returns a STRING; over
+  atom elements an ATOM. Normalize with a text_string helper, not a
+  one-directional `atom_string/2`.
+- `journal:with_test_journal(Goal)` calls the goal in module `journal`:
+  qualify test bodies with `user:` at the call site and keep them at
+  file level. Same for closures handed through run data (`api`,
+  `model_step`): the delegate module only sees them as
+  `user:fake_api/3`.
+- plunit file-level predicates written INSIDE begin_tests blocks land
+  in the plunit module — hoist shared fixtures to file level.
+- Passing a PREDICATE NAME where a term is expected silently fails:
+  call `test_grant(Grant)` / `plan_schema(Spec)` first, then pass the
+  value.
 
-1. Fixture bug (do first): `journal:with_test_journal(reply_body)`
-   resolves the goal in module `journal` because the body predicates
-   were defined inside plunit blocks. Fix by hoisting the body
-   predicates to file level (user context) or qualifying the goal with
-   the current module at the call site.
-2. Then implement, in this order (all completion-mode / symbolic):
-   - `copilot_delegate:model_call` must read the trusted model step
-     hook from `State.data.model_step` (Pred4, same shape as
-     `model_strategy` `step_call`) and thread
-     `run_id(run:<repo>:<pr>:<sha>)` so spend records land
-     (`spec_ledger_records_spend`). Config comes from
-     `State.data.grant.config` — the grant already carries the
-     effective .copilot config.
-   - `plan_task`/`parse_plan_items`: replace the `parse_plan_items(
-     _Text, []).` stub with real structured decoding:
-     `rlm_chain:structured_schema_compile(list(object([field(path,
-     string, required), field(change, string, required), field(message,
-     string, required)])), ok(Schema))` then
-     `structured_decode_validate(Schema, Stripped, ok(Plan))` after
-     stripping markdown fences host-side. Enforce `Plan \== []`,
-     `length(Plan) =< 16`, and safe relative paths (no leading `/`, no
-     `..`). Rejecting is correct behavior: it routes to the failed
-     terminal -> visible failure comment.
-   - `content_for`: fetch the ORIGINAL file from the base branch via
-     the api hook (`get_file_content`, args `{owner, repo, branch,
-     path}`), call the model for the full new content, strip fences,
-     require non-empty, `base64_encoded/3`, push. Needs
-     `data.base_branch` to ALWAYS be present — see next point.
-   - `service:run_task/2` must put `base_branch` into the run data
-     unconditionally (PR base branch when a PR exists, else
-     `default_branch/1`), and accept a new service option
-     `model_step(Pred4)` into the data dict. `resume_one/2` must
-     re-inject `model_step` the same way it re-injects `api`.
-   - `reply_with_citations` and `post_review` (request_changes only)
-     already conform; tests cover them once the fixture is fixed.
+## What "ready" looks like now (dogfood)
 
-## Dogfood blockers (what "ready" means)
+1. Point the daemon at its own repo:
+   `FORGEJO_URL=... FORGEJO_TOKEN=... swipl -s bin/copilot-service.pl -- --forever --repo nsaspy/forgejo-copilot`
+2. Open an issue mentioning @copilot with a small task; the bot branches
+   under `copilot/`, pushes, opens a PR; `nix flake check` gates the
+   merge; the human approves (never the bot).
+3. Watch the journal under `state/run/` (leases, effects, spend).
 
-1. t_delegate (above) — every real task currently dies at `replied`
-   because the plan parser is a stub, and pushes placeholder content.
-2. t_daemon — there is NO daemon entry point. `service.pl` exports
-   `poll_once/1` only; the documented `run_forever` does not exist.
-   Build `bin/copilot-service.pl`: `--once` / `--forever`, env
-   fail-fast (FORGEJO_URL/TOKEN), `resume_paused/1` on start, catch +
-   continue poll loop with `poll_seconds` (sleep is fine there; tests
-   stay deterministic).
-3. t_selfhost — commit a `.copilot` to THIS repo (enabled:true,
-   tasks:true, auto:false to avoid review storms) + README runbook, so
-   the bot can be pointed at its own repo and its PRs come back through
-   the flake checks. That closes the dogfood loop.
+## Next steps (not started)
 
-## Architecture notes (so the next session doesn't re-derive)
-
-- Completion mode is the paradigm: the model is a text->text oracle;
-  all agency is Prolog (graph machine + delegate). No native tool
-  calls; `rlm_direct` (provider-native tool loop) exists upstream but
-  would need a spec amendment (model holds no execution capability).
-- Node patches must only touch schema fields; run payload goes through
-  the `data` field (`patch{data: Data.put(Key, Value)}`).
-- `graph_resume` reloads state from the checkpoint — anything a fresh
-  process must supply (delegate/api/model_step) goes through the
-  resume patch.
-- Journal enumeration uses append-only indexes (lease-index,
-  effect-index); `key/3` formatting cannot enumerate with unbound
-  args. `journal:facts/1` returns `posted_effect/3` + `lease/3`.
-- `read_line_to_string` returns `end_of_file` at EOF (a success).
-- Delegate protocol outcomes: `ok(Patch) | failed(Error) |
-  interrupt(R, P)`; a throw becomes a failed terminal, never a retry.
+- t_dogfood-live: actually run the loop above once and record the run
+  id + evidence in the KB.
+- Push `handoff/dogfood-plan` and open a PR against main so the selfhost
+  loop exercises the flake checks.
+- Port `llm_text.pl` (+ the plan_items expert shape) upstream to
+  prolog-rlm as the structured-output bridge; keep this repo's copies
+  in sync until upstream adopts them.
+- Consider the review/ask flows end-to-end with a live model (auto is
+  off on purpose; use /review manually).
 
 ## Repo hygiene
 
