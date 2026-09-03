@@ -10,6 +10,9 @@ kb_task(t_pack_web, done, 'main-build', 'web pack green').
 kb_task(t_restart, done, 'resume-continuation', '07 un-parked and green; resume patch delivers delegate/api; effects index; admission Config bind; fake_api EOF fix; gate 96/96').
 kb_task(t_verify, done, 'resume-continuation', 'verify/verify.pl: 18 conformance checks; caught+fixed tier_chain order drift; exit 0/1').
 kb_task(t_smoke, done, 'resume-continuation', 'bin/copilot-demo.pl credential-free walkthrough; flake smoke check added (SWIPL_PACK_PATH fixed on all checks)').
+kb_task(t_delegate, in_progress, 'resume-continuation', '08 parked .known-red: 5/12 green; fixture bug: with_test_journal goals resolve in journal module - qualify at call site or hoist bodies to user context').
+kb_task(t_daemon, pending, 'resume-continuation', 'bin/copilot-service.pl: --once/--forever daemon, env fail-fast, resume on start').
+kb_task(t_selfhost, pending, 'resume-continuation', 'commit .copilot to this repo + README dogfood runbook').
 kb_dep(t_tests, t_spec).
 kb_dep(t_config, t_tests).
 kb_dep(t_gate, t_config).
@@ -28,6 +31,7 @@ kb_event(1788375462.2998836, 'main-build', 'test gate green: 29 spec tests; star
 kb_event(1788386153.6421485, 'main-build', 'HANDOFF: gate 95/95 with 07 parked; next session continues from HANDOFF.md').
 kb_event(1788387445.809784, 'resume-continuation', 'continuation session started; PROLOG_RLM_HOME=~/Documents/Projects/prolog-rlm main@156bfe9; gate 95/95 confirmed').
 kb_event(1788393882.4907691, 'resume-continuation', 'tasks t_restart/t_verify/t_smoke done; gate 97/97; flake checks green').
+kb_event(1788404943.462933, 'resume-continuation', 'dogfood build-out paused at t_delegate; hand-off PR opened').
 kb_evidence(t_spec, '30/30 invariant battery pass', 'Prolog MCP session cb0808bce0d1').
 kb_evidence(t_restart, 'gate 96/96 incl 07; 3-process pause/resume/re-poll exactly-once', 'swipl -q -s test/run_tests.pl @ e413c53').
 kb_evidence(t_verify, '18/18 checks pass, exit 0; drift detection proven on chain order', 'swipl -q -s verify/verify.pl @ db4efbe').

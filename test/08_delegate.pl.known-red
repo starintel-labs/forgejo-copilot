@@ -1,0 +1,230 @@
+/* Real delegate — unit tests with a fake Forgejo api hook and a fake
+   model step. Deterministic: no network, no sleeps; the journal is a
+   temp store per test. Covers: structured plan parsing (fences, cap,
+   empty, unexpected fields, unsafe paths), real file content fetch +
+   model rewrite + base64 push, review citation filtering,
+   request-changes-only reviews (never approve), empty-review skip,
+   effect idempotency, and reply citations. */
+
+:- use_module('loader.pl').
+:- use_module(fcopilot_spec(forgejo_copilot_spec)).
+:- use_module(fcopilot(copilot_delegate)).
+:- use_module(fcopilot(journal)).
+:- use_module(library(base64)).
+:- use_module(library(lists)).
+
+:- begin_tests(delegate_plan).
+
+test(plan_parses_fenced_json) :-
+    plan_json_text(["[{\"path\":\"src/a.pl\",",
+                    "\"change\":\"fix loop\",",
+                    "\"message\":\"fix the loop bug\"}]"], Text),
+    grant_state(Text, State),
+    copilot_delegate:node(planned, State, ctx, ok(Patch)),
+    get_dict(data, Patch, Data),
+    get_dict(plan, Data, [Plan0]),
+    get_dict(path, Plan0, 'src/a.pl'),
+    get_dict(change, Plan0, 'fix loop'),
+    get_dict(message, Plan0, 'fix the loop bug').
+
+test(plan_rejects_invalid_json) :-
+    grant_state("this is not json", State),
+    \+ copilot_delegate:node(planned, State, ctx, _Outcome).
+
+test(plan_rejects_empty) :-
+    grant_state("[]", State),
+    \+ copilot_delegate:node(planned, State, ctx, _Outcome).
+
+test(plan_rejects_over_cap) :-
+    findall(Item,
+            (   between(1, 17, N),
+                format(atom(Item),
+                       '{"path":"src/~w.pl","change":"c","message":"m"}', [N])
+            ),
+            Items),
+    atomic_list_concat(Items, ",", Joined),
+    format(atom(Text), "[~w]", [Joined]),
+    grant_state(Text, State),
+    \+ copilot_delegate:node(planned, State, ctx, _Outcome).
+
+test(plan_rejects_unexpected_fields) :-
+    plan_json_text(["[{\"path\":\"src/a.pl\",\"change\":\"c\",",
+                    "\"message\":\"m\",\"shell\":\"rm -rf\"}]"], Text),
+    grant_state(Text, State),
+    \+ copilot_delegate:node(planned, State, ctx, _Outcome).
+
+test(plan_rejects_unsafe_path) :-
+    plan_json_text(["[{\"path\":\"../etc/passwd\",\"change\":\"c\",",
+                    "\"message\":\"m\"}]"], Text),
+    grant_state(Text, State),
+    \+ copilot_delegate:node(planned, State, ctx, _Outcome).
+
+:- end_tests(delegate_plan).
+
+:- begin_tests(delegate_implement).
+
+test(implemented_fetches_and_pushes_content) :-
+    journal:with_test_journal(impl_body).
+
+impl_body :-
+    Content = "line1\nline2\n",
+    atomic_list_concat(["```", Content, "```"], "\n", ModelText),
+    impl_state(ModelText, State),
+    copilot_delegate:node(branched, State, ctx, _),
+    copilot_delegate:node(implemented, State, ctx, ok(Patch)),
+    get_dict(data, Patch, Data),
+    get_dict(commits, Data, [Commit]),
+    get_dict(path, Commit, 'src/a.pl'),
+    last_push(Push),
+    get_dict(content_b64, Push, B64),
+    atom_codes(B64, B64Codes),
+    phrase(base64(PlainCodes), B64Codes),
+    atom_codes(Content, PlainCodes),
+    get_dict(branch, Push, Branch),
+    atom_concat('copilot/', _, Branch).
+
+test(implemented_rejects_empty_model_content) :-
+    journal:with_test_journal(impl_empty_body).
+
+impl_empty_body :-
+    impl_state("```\n\n```", State),
+    copilot_delegate:node(branched, State, ctx, _),
+    \+ copilot_delegate:node(implemented, State, ctx, ok(_)).
+
+:- end_tests(delegate_implement).
+
+:- begin_tests(delegate_review).
+
+test(review_filters_uncited_findings) :-
+    ModelText = "good line src/a.pl:12\nunsupported claim without file\n",
+    review_state(ModelText, State),
+    copilot_delegate:node(reviewed, State, ctx, ok(Patch)),
+    get_dict(data, Patch, Data),
+    get_dict(findings, Data, Findings),
+    Findings == ["good line src/a.pl:12"].
+
+test(posted_uses_request_changes_only) :-
+    journal:with_test_journal(review_post_body).
+
+review_post_body :-
+    review_state("finding src/a.pl:1\n", State),
+    copilot_delegate:node(reviewed, State, ctx, _),
+    copilot_delegate:node(deduped, State, ctx, _),
+    copilot_delegate:node(posted, State, ctx, ok(_)),
+    last_review(Review),
+    get_dict(event, Review, request_changes).
+
+test(posted_skips_when_no_findings) :-
+    journal:with_test_journal(review_skip_body).
+
+review_skip_body :-
+    review_state("nothing actionable here\n", State),
+    copilot_delegate:node(reviewed, State, ctx, ok(P1)),
+    get_dict(data, P1, D1),
+    get_dict(findings, D1, []),
+    copilot_delegate:node(deduped, State, ctx, _),
+    review_calls(0).
+
+:- end_tests(delegate_review).
+
+:- begin_tests(delegate_reply).
+
+test(reply_cites_every_planned_path) :-
+    journal:with_test_journal(reply_body).
+
+reply_body :-
+    reply_state(State),
+    copilot_delegate:node(replied, State, ctx, ok(_)),
+    last_comment(Comment),
+    get_dict(body, Comment, Body),
+    sub_string(Body, _, _, _, 'src/a.pl').
+
+:- end_tests(delegate_reply).
+
+% -- fake Forgejo hook (records into dynamic predicates) -----------------------
+
+:- dynamic push_record/1.
+:- dynamic review_record/1.
+:- dynamic comment_record/1.
+:- dynamic review_count/1.
+
+fake_api(get_issue, Args,
+         issue{number:N, body:"@copilot fix the parser bug",
+               user:login{login:"alice"}}) :-
+    (   get_dict(index, Args, N) -> true ; N = 7 ),
+    !.
+fake_api(get_comment_thread, _, _{comments:[]}) :- !.
+fake_api(get_pr, _, _) :- !, fail.
+fake_api(get_file_content, _{path:'src/a.pl'}, _{text:"old content\n"}) :- !.
+fake_api(create_branch, _, branch{name:'copilot/task-7'}) :- !.
+fake_api(push_commit, Args, _{commit_sha:sha(_Path)}) :-
+    !,
+    retractall(push_record(_)),
+    assertz(push_record(Args)).
+fake_api(create_pr, _, _{pr_index:42}) :- !.
+fake_api(post_issue_comment, Args, _{comment_id:99}) :- !,
+    retractall(comment_record(_)),
+    assertz(comment_record(Args)).
+fake_api(post_pr_review, Args, _{id:5}) :- !,
+    retractall(review_record(_)),
+    assertz(review_record(Args)),
+    (   review_count(N0) -> N1 is N0 + 1 ; N1 = 1 ),
+    retractall(review_count(_)),
+    assertz(review_count(N1)).
+fake_api(get_diff, _, _{diff:"diff --git a/src/a.pl b/src/a.pl\n"}) :- !.
+fake_api(list_changed_files, _, _{files:[file{filename:'src/a.pl'}]}) :- !.
+
+last_push(Push) :- push_record(Push).
+last_review(Review) :- review_record(Review).
+last_comment(Comment) :- comment_record(Comment).
+review_calls(N) :- ( review_count(N) -> true ; N = 0 ).
+
+% -- fake model step (data.model_step hook) -------------------------------------
+
+fake_model(Text, _Step, _Request, _Extra, ok(model_response{content:Text})).
+
+% -- state builders --------------------------------------------------------------
+
+grant_state(ModelText, State) :-
+    State = graph_state{data:run_data{grant:test_grant,
+                                      api:fake_api,
+                                      model_step:fake_model(ModelText)},
+                        status:running}.
+
+impl_state(ModelText, State) :-
+    State0 = graph_state{data:run_data{grant:test_grant,
+                                       api:fake_api,
+                                       model_step:fake_model(ModelText),
+                                       base_branch:'main'},
+                         status:running},
+    copilot_delegate:node(branched, State0, ctx, ok(BPatch)),
+    get_dict(data, BPatch, BData),
+    put_dict(data, State0, BData, State).
+
+review_state(ModelText, State) :-
+    State = graph_state{data:run_data{grant:test_grant,
+                                      api:fake_api,
+                                      model_step:fake_model(ModelText),
+                                      diff:"diff --git a/src/a.pl\n",
+                                      files:[file{filename:'src/a.pl'}],
+                                      comments:[]},
+                        status:running}.
+
+reply_state(State) :-
+    State = graph_state{data:run_data{grant:test_grant,
+                                      api:fake_api,
+                                      plan:[change{path:'src/a.pl',
+                                                   change:'fix',
+                                                   message:'m'}]},
+                        status:running}.
+
+test_grant(grant{repo:'o/r', pr:7, sha:sha1,
+                 event:event{actor:alice, actor_kind:human, kind:mention},
+                 config:config{enabled:true, model:fast, auto:true,
+                               tasks:true},
+                 route:task}).
+
+plan_json_text(Lines, Text) :-
+    atomic_list_concat(["```json", "\n"], Open),
+    atomic_list_concat(Lines, Joined),
+    format(atom(Text), "~w~w~w```", [Open, Joined, "\n"]).
