@@ -1,0 +1,7 @@
+.git
+.prolog
+state
+**/__pycache__
+**/*.pyc
+.env*
+result

@@ -142,8 +142,13 @@ terminal_edge(Node, conditional(Node, RId,
 
 node_step(Node, State, Context, Result) :-
     delegate(State, Delegate),
-    node_outcome(Delegate, Node, State, Context, Outcome),
-    finalize(Node, Outcome, Result).
+    (   node_outcome(Delegate, Node, State, Context, Outcome)
+    ->  finalize(Node, Outcome, Result)
+    % A delegate clause failing outright (e.g. a rejected plan) is a
+    % legitimate node failure: route it to the failed terminal so the
+    % run stays visible (failure comment), never a silent error outcome.
+    ;   finalize(Node, failed(node_failed(Node)), Result)
+    ).
 
 node_outcome(Delegate, Node, State, Context, Outcome) :-
     catch(call(Delegate:node(Node, State, Context, Result0)),

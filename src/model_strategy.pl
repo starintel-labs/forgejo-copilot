@@ -30,7 +30,8 @@ ledger (spend tracing) when a run id is supplied.
 %% effective_tier(+TriggerKind, +Config, -Tier) is det.
 % /review always uses the review tier. Task execution uses the chat tier
 % by default (model: fast) and upgrades to the review tier for
-% model: strong. /ask is chat tier.
+% model: strong. /ask is chat tier. The tier names themselves are
+% accepted as identity mappings so callers can select a tier directly.
 effective_tier(review, _Config, review).
 effective_tier(task, Config, Tier) :-
     (   get_dict(model, Config, strong)
@@ -38,6 +39,7 @@ effective_tier(task, Config, Tier) :-
     ;   Tier = chat
     ).
 effective_tier(ask, _Config, chat).
+effective_tier(chat, _Config, chat).
 
 %% tier_chain(+Tier, +FallbackModel, -Steps) is det.
 % Steps are ordered step{name, model, provider} dicts. The fallback

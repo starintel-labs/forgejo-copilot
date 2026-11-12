@@ -32,6 +32,8 @@ Options (list of Name(Value)):
     poll_seconds(N)    interval for run_forever (never used in tests)
     delegate(Module)   graph node delegate (copilot_delegate)
     api(Pred3)         trusted Forgejo call hook (default service:api_call)
+    model_step(Pred4)  trusted model step hook, injected into run data
+                       (default none: the delegate's default HTTP chain)
 
 All credentials come from the environment and are never logged.
 */
@@ -44,6 +46,7 @@ All credentials come from the environment and are never logged.
 :- use_module(fcopilot(forgejo_event)).
 :- use_module(fcopilot(forgejo), []).
 :- use_module(fcopilot(journal)).
+:- use_module(fcopilot(repo_ref)).
 :- use_module(library(rlm)).
 :- use_module(library(lists)).
 :- use_module(library(option)).
@@ -189,10 +192,11 @@ resume_one(RunId, Options) :-
             get_dict(grant, Data0, Grant),
             % graph_resume reloads its state from the durable checkpoint,
             % never from a locally patched copy, so the fresh-process
-            % delegate/api closures must be delivered through the resume
-            % patch; patching only a local State would be silently lost
-            % and the run would re-pause on the stale delegate.
-            Data = Data0.put(delegate, Delegate).put(api, Api),
+            % closures (delegate/api/model_step) must be delivered through
+            % the resume patch; patching only a local State would be
+            % silently lost and the run would re-pause on the stale
+            % closures.
+            resume_data(Data0, Options, Delegate, Api, Data),
             catch(rlm:graph_resume(Compiled, Backend, RunId,
                                    resume(resumed, patch{data: Data}),
                                    [], Outcome0),
@@ -203,19 +207,45 @@ resume_one(RunId, Options) :-
         ),
         rlm:graph_backend_close(Backend)).
 
+%% resume_data(+CheckpointData, +Options, +Delegate, +Api, -Data) is det.
+% Re-inject every trusted closure a fresh process must supply: the
+% delegate, the api hook, and (when configured) the model step.
+resume_data(Data0, Options, Delegate, Api, Data) :-
+    model_step_option(Options, ModelStep),
+    inject_model_step(Data0, ModelStep, Data1),
+    Data = Data1.put(delegate, Delegate).put(api, Api).
+
+model_step_option(Options, ModelStep) :-
+    option(model_step(ModelStep), Options, none).
+
+inject_model_step(Data, none, Data) :- !.
+inject_model_step(Data, ModelStep, Data.put(model_step, ModelStep)).
+
 %% base_config(+Repo, +PR, +Options, -FileSpec) is det.
 % The .copilot file is read from the PR BASE branch HEAD only. A .copilot
 % inside the PR branch never self-enables (spec). For an issue (no PR),
-% the repo's default branch head is used instead.
+% the configured config branch is used (service option config_branch/1,
+% CLI --config-branch), defaulting to the repo's default branch head.
 base_config(Repo, PR, Options, FileSpec) :-
     (   base_branch(Repo, PR, Options, BaseBranch)
     ->  true
-    ;   default_branch(BaseBranch)
+    ;   issue_config_branch(Options, BaseBranch)
     ),
     copilot_file_content(Repo, BaseBranch, Options, Text),
     !,
     FileSpec = Text.
 base_config(_Repo, _PR, _Options, none).
+
+%% issue_config_branch(+Options, -Branch) is det.
+% Branch whose HEAD carries .copilot for issue (no-PR) events, and the
+% branch task runs branch from when no PR exists: the config_branch
+% service option when given, else the repo's default branch. This is
+% what lets the bot work against any branch without merging first.
+issue_config_branch(Options, Branch) :-
+    (   option(config_branch(Branch), Options)
+    ->  true
+    ;   default_branch(Branch)
+    ).
 
 default_branch(Branch) :-
     (   getenv('COPILOT_DEFAULT_BRANCH', B), B \== ''
@@ -254,12 +284,14 @@ run_task(Grant, Options) :-
     format(atom(GraphDb), '~w/graph-checkpoints.pl', [Dir]),
     option(delegate(Delegate), Options),
     api_option(Options, Api),
+    model_step_option(Options, ModelStep),
     run_id(Grant.repo, Grant.pr, Grant.sha, RunId),
     Data0 = run_data{grant:Grant, api:Api, delegate:Delegate},
-    (   base_branch(Grant.repo, Grant.pr, Options, BaseBranch)
-    ->  Data = Data0.put(base_branch, BaseBranch)
-    ;   Data = Data0
-    ),
+    % base_branch is ALWAYS present in run data: the PR base branch when a
+    % PR exists, else the repo's default branch (content fetch and branch
+    % creation depend on it).
+    base_branch_required(Grant, Options, BaseBranch),
+    inject_model_step(Data0.put(base_branch, BaseBranch), ModelStep, Data),
     copilot_graph:compile(Compiled),
     setup_call_cleanup(
         rlm:graph_backend_open(persist(GraphDb), Backend),
@@ -272,6 +304,13 @@ run_task(Grant, Options) :-
             finalize_run(Grant, Outcome0, Options)
         ),
         rlm:graph_backend_close(Backend)).
+
+%% base_branch_required(+Grant, +Options, -BaseBranch) is det.
+base_branch_required(Grant, Options, BaseBranch) :-
+    (   base_branch(Grant.repo, Grant.pr, Options, BaseBranch)
+    ->  true
+    ;   issue_config_branch(Options, BaseBranch)
+    ).
 
 run_id(Repo, PR, Sha, RunId) :-
     format(atom(RunId), 'run:~w:~w:~w', [Repo, PR, Sha]).
@@ -368,13 +407,6 @@ api_call(get_file_content,
     forgejo_tools:get_file_content(Owner, Repo, Branch, Path, Text).
 api_call(Tool, Args, Value) :-
     forgejo_tools:handler(Tool, Args, Value).
-
-split_repo(Repo, Owner, Name) :-
-    atom_codes(Repo, Codes),
-    append(OwnerCodes, [0'/ | NameCodes], Codes),
-    !,
-    atom_codes(Owner, OwnerCodes),
-    atom_codes(Name, NameCodes).
 
 poll_time(Polled, T) :-
     (   get_dict(updated, Polled, T0), number(T0)
