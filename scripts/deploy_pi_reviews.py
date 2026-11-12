@@ -8,6 +8,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
+from datetime import datetime, timezone
 
 SOURCE = Path(__file__).resolve().parent.parent
 
@@ -75,10 +76,16 @@ def main():
         shutil.copytree(SOURCE / folder, install / folder, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__"))
     config_file = config_dir / "service.json"
+    previous = json.loads(config_file.read_text()) if config_file.exists() else {}
+    auto_since = {repo: stamp for repo, stamp in previous.get("auto_since", {}).items() if repo in args.repo}
+    for repo in args.repo:
+        if repo not in previous.get("repos", []):
+            auto_since[repo] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     config_file.write_text(json.dumps({"forgejo_url": args.forgejo_url,
                                      "token_file": str(args.token_file.resolve()),
                                      "identities": identities,
                                      "review_identity": args.review_as,
+                                     "auto_since": auto_since,
                                      "repos": args.repo, "state_dir": str(state)}, indent=2))
     config_file.chmod(0o600)
     run("docker", "build", "-f", str(SOURCE / "deploy/pi.Dockerfile"), "-t", "forgejo-copilot-pi:1.5.2", str(SOURCE))

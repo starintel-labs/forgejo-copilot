@@ -356,11 +356,12 @@ def poll_questions(forge, repos, identities, db, root):
                 LOG.error("question poll failed %s #%s (%s)", repo, issue["number"], type(error).__name__)
 
 
-def requested(comment):
-    return bool(re.search(r"(?im)^\s*(?:/review\b|@copilot\s+(?:/review|review)\b)", comment["body"]))
+def requested(comment, identities=()):
+    handles = "|".join(re.escape(login) for login in ("copilot", *identities))
+    return bool(re.search(r"(?im)^\s*(?:/review\b|@(?:" + handles + r")\s+/?review\b)", comment["body"]))
 
 
-def poll(forge, repos, db, root, review_poster=None):
+def poll(forge, repos, db, root, review_poster=None, *, review_identities=(), auto_since=None):
     poster = review_poster or forge
     db.execute("CREATE TABLE IF NOT EXISTS failures(id TEXT PRIMARY KEY, retry_at REAL NOT NULL)")
     for repo in repos:
@@ -384,15 +385,18 @@ def poll(forge, repos, db, root, review_poster=None):
                 if not settings["enabled"]:
                     continue
                 comments = list(forge.pages(f"repos/{repo}/issues/{pull['number']}/comments"))
-                trigger = "auto" if settings["auto"] else None
-                if trigger is None:
-                    for comment in comments:
-                        if not requested(comment):
-                            continue
-                        login = comment["user"]["login"]
-                        permission = forge.call(f"repos/{repo}/collaborators/{urllib.parse.quote(login, safe='')}/permission")
-                        if permission.get("permission") in {"write", "admin", "owner"}:
-                            trigger = str(comment["id"])
+                trigger = None
+                for comment in comments:
+                    if not requested(comment, review_identities):
+                        continue
+                    login = comment["user"]["login"]
+                    if login.lower() in review_identities or comment["user"].get("bot"):
+                        continue
+                    permission = forge.call(f"repos/{repo}/collaborators/{urllib.parse.quote(login, safe='')}/permission")
+                    if permission.get("permission") in {"write", "admin", "owner"}:
+                        trigger = str(comment["id"])
+                if trigger is None and settings["auto"] and (not auto_since or pull.get("created_at", "") >= auto_since):
+                    trigger = "auto"
                 if trigger is None:
                     continue
                 identity = f"{repo}:{pull['number']}:{pull['head']['sha']}:{base['sha']}:{trigger}"
@@ -464,7 +468,10 @@ def main():
             db.execute("CREATE TABLE IF NOT EXISTS completed(id TEXT PRIMARY KEY)")
             while True:
                 try:
-                    poll(forge, settings["repos"], db, root, review_poster)
+                    for repo in settings["repos"]:
+                        poll(forge, [repo], db, root, review_poster,
+                             review_identities=identities,
+                             auto_since=settings.get("auto_since", {}).get(repo))
                     if identities:
                         poll_questions(forge, settings["repos"], identities, db, root)
                 except Exception as error:

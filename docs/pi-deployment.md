@@ -23,8 +23,12 @@ Then merge `.copilot` with `enabled: true`, `auto: true`, `tasks: false` into
 each target branch. This one file enables reviews for every PR against that
 branch, including new commits on existing PRs. A PR cannot self-enable.
 Automatic polling is every 30 seconds. `auto: false` restricts runs to
-`/review` or `@copilot review` comments by writers/admins. Only the latest
+`/review`, `@mara review`, `@star review` or legacy `@copilot review` comments by writers/admins. Only the latest
 authorized manual request is acted on; historical requests are not queued.
+Explicit requests also work when `auto: true`. New repository enrollment records
+an automatic-review cutoff: pre-existing PRs require an explicit request, so
+enrollment does not create a bulk historical review storm. The cutoff persists
+across deployments in the private service configuration.
 
 Repository-owned templates and scripts are the durable deployment source.
 Runtime copies go to `~/.local/share/forgejo-copilot/`; private configuration

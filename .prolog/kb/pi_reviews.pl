@@ -6,6 +6,8 @@ review_scope(explicit_repository_allowlist, open_pull_requests).
 review_authority(comment_only, no_push_approve_or_merge).
 review_manual_permission(write).
 review_manual_permission(admin).
+review_manual_handles(configured_real_identities_and_legacy_copilot).
+review_enrollment_cutoff(automatic_existing_pr_backlog_suppressed).
 review_idempotency([repository, pull_number, head_sha, base_sha, trigger]).
 review_recovery(sqlite_ledger, remote_comment_marker).
 review_runtime_state('~/.local/state/forgejo-copilot').
