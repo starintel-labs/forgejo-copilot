@@ -78,6 +78,29 @@ class Reviews(unittest.TestCase):
             with closing(sqlite3.connect(path)) as db:
                 self.assertEqual(db.execute("SELECT cents FROM budget").fetchone()[0], 500)
 
+    def test_confirmed_usage_settlement_is_conservative_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "budget.sqlite3")
+            attempt = gateway.reserve(path)
+            gateway.settle(path, attempt, {"prompt_tokens": 10000, "completion_tokens": 1000})
+            gateway.settle(path, attempt, {"prompt_tokens": 10000, "completion_tokens": 1000})
+            with closing(sqlite3.connect(path)) as db:
+                self.assertEqual(db.execute("SELECT cents FROM budget").fetchone()[0], 2)
+            unconfirmed = gateway.reserve(path)
+            with self.assertRaises(ValueError):
+                gateway.settle(path, unconfirmed, {"prompt_tokens": -1, "completion_tokens": 1})
+            with closing(sqlite3.connect(path)) as db:
+                self.assertEqual(db.execute("SELECT cents FROM budget").fetchone()[0], 27)
+
+    def test_usage_stream_requires_real_outer_usage_and_done(self):
+        stream = gateway.UsageStream()
+        stream.feed(b'data: {"choices":[{"delta":{"content":"usage is not proof"}}]}\n')
+        self.assertIsNone(stream.usage)
+        stream.feed(b'data: {"usage":{"prompt_tokens":100,')
+        stream.feed(b'"completion_tokens":10}}\n\ndata: [DONE]\n\n')
+        self.assertTrue(stream.done)
+        self.assertEqual(stream.usage["prompt_tokens"], 100)
+
     def test_gateway_policy(self):
         body = {"model": gateway.MODEL, "messages": [{"role": "user", "content": "Review"}], "max_tokens": 999999}
         self.assertEqual(gateway.completion(body)["max_tokens"], 4096)

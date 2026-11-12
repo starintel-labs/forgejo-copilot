@@ -34,7 +34,9 @@ def config(text):
     """Match .copilot's fail-closed boolean semantics; no executable YAML."""
     result = {"enabled": False, "auto": True, "tasks": False, "questions": False,
               "question_mentions": "mara,star", "question_mode": "mention",
-              "question_context": "issues,prs", "question_access": "writers"}
+              "question_context": "issues,prs", "question_access": "writers",
+              "task_mentions": "mara,star", "task_tests": "",
+              "task_allowed_paths": "src/,tests/,docs/,actors/,README.md,pyproject.toml"}
     if len(text.encode()) > 4096:
         return {"enabled": False}
     seen = set()
@@ -44,18 +46,26 @@ def config(text):
             continue
         if line.count(":") != 1:
             return {"enabled": False}
-        key, value = (s.strip().lower() for s in line.split(":", 1))
-        if key in {"question_mentions", "question_context"}:
+        key, value = (s.strip() for s in line.split(":", 1))
+        key = key.lower()
+        if key not in {"task_tests", "task_allowed_paths"}:
+            value = value.lower()
+        if key in {"question_mentions", "question_context", "task_mentions", "task_allowed_paths"}:
             value = ",".join(part.strip() for part in value.split(","))
         if key in seen:
             return {"enabled": False}
         seen.add(key)
-        if key in {"question_mentions", "question_mode", "question_context", "question_access"}:
+        if key in {"task_tests", "task_allowed_paths"}:
+            if not value:
+                return {"enabled": False}
+            result[key] = value
+        elif key in {"question_mentions", "question_mode", "question_context", "question_access", "task_mentions"}:
             valid = {
                 "question_mode": value in {"mention", "explicit"},
                 "question_context": value in {"issues", "prs", "issues,prs", "prs,issues"},
                 "question_access": value in {"writers", "anyone"},
                 "question_mentions": bool(re.fullmatch(r"[a-z0-9_-]+(?:,[a-z0-9_-]+)*", value)),
+                "task_mentions": bool(re.fullmatch(r"[a-z0-9_-]+(?:,[a-z0-9_-]+)*", value)),
             }
             if not valid[key]:
                 return {"enabled": False}
@@ -73,11 +83,12 @@ class Forgejo:
             raise ValueError("Forgejo HTTPS URL required")
         self.url, self.token = url.rstrip("/"), token
 
-    def call(self, path, body=None, raw=False, limit=MAX_ARCHIVE):
+    def call(self, path, body=None, raw=False, limit=MAX_ARCHIVE, method=None):
         request = urllib.request.Request(
             self.url + "/api/v1/" + path,
             data=None if body is None else json.dumps(body).encode(),
             headers={"Authorization": "token " + self.token, "Content-Type": "application/json"},
+            method=method,
         )
         # Never follow an archive/API redirect carrying the token to another origin.
         class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -87,7 +98,7 @@ class Forgejo:
             data = response.read(limit + 1)
         if len(data) > limit:
             raise ValueError("Forgejo response exceeds limit")
-        return data if raw else json.loads(data)
+        return data if raw else json.loads(data) if data else None
 
     def pages(self, path):
         for page in range(1, 101):
@@ -148,18 +159,24 @@ def extract_snapshot(data, target):
             output.chmod(0o444)
 
 
-def sandbox_command(name, snapshot):
-    return [
-        "docker", "run", "--rm", "--interactive", "--name", name,
-        "--label", "actor=forgejo-copilot-review",
+def sandbox_command(name, snapshot, *, task=False):
+    argv = [
+        "docker", "run", *( ["--detach"] if task else ["--rm", "--interactive"] ), "--name", name,
+        "--label", "actor=forgejo-copilot-task" if task else "actor=forgejo-copilot-review",
         "--network", "forgejo-copilot-sandbox", "--read-only",
         "--user", "1000:1000", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
         "--pids-limit=128", "--memory=1g", "--memory-swap=1g", "--cpus=1",
         "--ulimit", "nofile=1024:1024", "--log-driver=none",
         "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777",
-        "--mount", f"type=bind,src={snapshot},dst=/workspace,readonly",
-        "forgejo-copilot-pi:1.5.2",
+        "--mount", f"type=bind,src={snapshot},dst={'/input' if task else '/workspace'},readonly",
     ]
+    if task:
+        argv += ["--tmpfs", "/workspace:rw,nosuid,nodev,size=128m,mode=1777",
+                 "--env", "COPILOT_MODE=implement", "--entrypoint", "/bin/sh"]
+    argv += ["forgejo-copilot-pi:1.5.2"]
+    if task:
+        argv += ["/opt/copilot/task-workspace.sh"]
+    return argv
 
 
 def agent_result(output):
@@ -189,7 +206,9 @@ def output_limit():
     resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024 * 1024, 8 * 1024 * 1024))
 
 
-def run_agent(forge, head_repo, sha, root, prompt, diff=None):
+def run_agent(forge, head_repo, sha, root, prompt, diff=None, *, role="review"):
+    if role not in {"review", "discord"}:
+        raise ValueError("Invalid agent role")
     if not REPO.fullmatch(head_repo) or not re.fullmatch(r"[a-f0-9]{40,64}", sha):
         raise ValueError("Invalid PR head")
     with tempfile.TemporaryDirectory(prefix="review-", dir=root) as directory:
@@ -199,10 +218,12 @@ def run_agent(forge, head_repo, sha, root, prompt, diff=None):
         if diff is not None:
             (snapshot / "COPILOT_REVIEW_DIFF.txt").write_text(diff)
             (snapshot / "COPILOT_REVIEW_DIFF.txt").chmod(0o444)
-        name = "copilot-review-" + uuid.uuid4().hex
+        name = "copilot-" + role + "-" + uuid.uuid4().hex
+        command = sandbox_command(name, snapshot)
+        command[command.index("actor=forgejo-copilot-review")] = "actor=forgejo-copilot-" + role
         try:
             with tempfile.TemporaryFile(mode="w+") as output:
-                result = subprocess.run(sandbox_command(name, snapshot), input=prompt, text=True,
+                result = subprocess.run(command, input=prompt, text=True,
                                         stdout=output, stderr=subprocess.DEVNULL, timeout=240,
                                         preexec_fn=output_limit)
                 if result.returncode:
@@ -237,6 +258,8 @@ def base_config(forge, repo, sha):
             error.close()
             return {"enabled": False}
         raise
+    if not isinstance(content, dict) or not isinstance(content.get("content"), str):
+        return {"enabled": False}
     return config(base64.b64decode(content["content"]).decode())
 
 
@@ -262,6 +285,8 @@ def poll_questions(forge, repos, identities, db, root):
     db.execute("CREATE TABLE IF NOT EXISTS failures(id TEXT PRIMARY KEY, retry_at REAL NOT NULL)")
     for repo in repos:
         info = forge.call(f"repos/{repo}")
+        if info.get("empty") or info.get("is_empty"):
+            continue
         branch = forge.call(f"repos/{repo}/branches/" + urllib.parse.quote(info["default_branch"], safe=""))
         default_sha = branch["commit"]["id"]
         for issue in forge.pages(f"repos/{repo}/issues?state=open&type=all"):
@@ -283,6 +308,10 @@ def poll_questions(forge, repos, identities, db, root):
                     body = event.get("body") or ""
                     if len(body.encode()) > 20_000:
                         continue
+                    if settings.get("tasks"):
+                        from copilot_jobs import invocation
+                        if invocation(body, settings, identities):
+                            continue
                     targets = question_targets(body, settings, identities)
                     if not targets:
                         continue
@@ -356,11 +385,12 @@ def poll_questions(forge, repos, identities, db, root):
                 LOG.error("question poll failed %s #%s (%s)", repo, issue["number"], type(error).__name__)
 
 
-def requested(comment):
-    return bool(re.search(r"(?im)^\s*(?:/review\b|@copilot\s+(?:/review|review)\b)", comment["body"]))
+def requested(comment, identities=()):
+    handles = "|".join(re.escape(login) for login in ("copilot", *identities))
+    return bool(re.search(r"(?im)^\s*(?:/review\b|@(?:" + handles + r")\s+/?review\b)", comment["body"]))
 
 
-def poll(forge, repos, db, root, review_poster=None):
+def poll(forge, repos, db, root, review_poster=None, *, review_identities=(), auto_since=None):
     poster = review_poster or forge
     db.execute("CREATE TABLE IF NOT EXISTS failures(id TEXT PRIMARY KEY, retry_at REAL NOT NULL)")
     for repo in repos:
@@ -373,26 +403,22 @@ def poll(forge, repos, db, root, review_poster=None):
                 pull = forge.call(f"repos/{repo}/pulls/{item['number']}")
                 base = pull["base"]
                 # Missing config disables; API failures are retried next cycle, never cached as disabled.
-                try:
-                    content = forge.call(f"repos/{repo}/contents/.copilot?ref=" + urllib.parse.quote(base["sha"], safe=""))
-                except urllib.error.HTTPError as error:
-                    if error.code == 404:
-                        error.close()
-                        continue
-                    raise
-                settings = config(base64.b64decode(content["content"], validate=False).decode())
+                settings = base_config(forge, repo, base["sha"])
                 if not settings["enabled"]:
                     continue
                 comments = list(forge.pages(f"repos/{repo}/issues/{pull['number']}/comments"))
-                trigger = "auto" if settings["auto"] else None
-                if trigger is None:
-                    for comment in comments:
-                        if not requested(comment):
-                            continue
-                        login = comment["user"]["login"]
-                        permission = forge.call(f"repos/{repo}/collaborators/{urllib.parse.quote(login, safe='')}/permission")
-                        if permission.get("permission") in {"write", "admin", "owner"}:
-                            trigger = str(comment["id"])
+                trigger = None
+                for comment in comments:
+                    if not requested(comment, review_identities):
+                        continue
+                    login = comment["user"]["login"]
+                    if login.lower() in review_identities or comment["user"].get("bot"):
+                        continue
+                    permission = forge.call(f"repos/{repo}/collaborators/{urllib.parse.quote(login, safe='')}/permission")
+                    if permission.get("permission") in {"write", "admin", "owner"}:
+                        trigger = str(comment["id"])
+                if trigger is None and settings["auto"] and (not auto_since or pull.get("created_at", "") >= auto_since):
+                    trigger = "auto"
                 if trigger is None:
                     continue
                 identity = f"{repo}:{pull['number']}:{pull['head']['sha']}:{base['sha']}:{trigger}"
@@ -460,13 +486,22 @@ def main():
         forge = Forgejo(settings["forgejo_url"], token)
         identities = load_identities(settings["forgejo_url"], settings.get("identities", {}))
         review_poster = identities[settings["review_identity"]] if settings.get("review_identity") else forge
+        from copilot_jobs import JobStore, poll_tasks
+        jobs = JobStore(root / "jobs.sqlite3")
         with closing(sqlite3.connect(root / "reviews.sqlite3")) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS completed(id TEXT PRIMARY KEY)")
             while True:
                 try:
-                    poll(forge, settings["repos"], db, root, review_poster)
-                    if identities:
-                        poll_questions(forge, settings["repos"], identities, db, root)
+                    for repo in settings["repos"]:
+                        try:
+                            poll_tasks(forge, repo, identities, jobs, armed=settings.get("task_identities", {}))
+                            poll(forge, [repo], db, root, review_poster,
+                                 review_identities=identities,
+                                 auto_since=settings.get("auto_since", {}).get(repo))
+                            if identities:
+                                poll_questions(forge, [repo], identities, db, root)
+                        except Exception as error:
+                            LOG.error("repository poll failed %s (%s)", repo, type(error).__name__)
                 except Exception as error:
                     LOG.error("poll failed (%s)", type(error).__name__)
                     if args.once:

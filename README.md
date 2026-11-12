@@ -152,10 +152,13 @@ swipl -q -s bin/copilot-demo.pl   # one mention through the pipeline, no env, no
 
 ### Self-hosting
 
-The root `.copilot` now enables automatic reviews and disables implementation
-tasks. Use the Pi deployment above for reviews. Running implementation tasks
-with the original engine requires a deliberate `tasks: true` opt-in; it is not
-part of the deployed review service.
+The root `.copilot` enables automatic reviews and disables implementation tasks
+for this repository. The isolated Pi deployment also supports opt-in background
+issue-to-PR tasks with separate trusted publisher credentials. See
+[deployment and task policy](docs/pi-deployment.md#background-implementation)
+and the [AI repository scaffold](templates/ai-repo/README.md).
+The optional Discord adapter remains disabled pending credentials and approved
+bindings; it shares task state and spending limits, not a separate AI budget.
 
 ## Running tests
 

@@ -10,6 +10,8 @@ import os
 import sqlite3
 import urllib.error
 import urllib.request
+import uuid
+from decimal import Decimal, ROUND_CEILING
 from datetime import datetime, timezone
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -43,6 +45,14 @@ def check_key(key):
     remaining = data.get("limit_remaining")
     if remaining is None or remaining < RESERVATION_CENTS / 100:
         raise ValueError("Daily budget exhausted")
+    return data
+
+
+def provider_floor_cents(data):
+    value = Decimal(str(data.get("usage_daily", 0))) + Decimal(str(data.get("byok_usage_daily", 0)))
+    if not value.is_finite() or value < 0:
+        raise ValueError("Invalid provider accounting")
+    return int((value * 100).to_integral_value(rounding=ROUND_CEILING))
 
 
 def check_price(key):
@@ -55,21 +65,75 @@ def check_price(key):
     # Optional search/image products are inaccessible: text-only content,
     # function-only tools, and no plugins. Reject unconditional extra fees.
     if any(float(prices.get(k, 0) or 0) != 0
-           for k in ("request", "internal_reasoning")):
+           for k in ("request", "internal_reasoning", "input_cache_write")):
         raise ValueError("Unbudgeted model fee")
+    if not 0 <= float(prices.get("input_cache_read", 0)) <= 0.000001:
+        raise ValueError("Unbudgeted cache-read price")
 
 
-def reserve(db_path):
+def reserve(db_path, floor_cents=0):
     day = datetime.now(timezone.utc).date().isoformat()
+    attempt = uuid.uuid4().hex
     with closing(sqlite3.connect(db_path)) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS budget(day TEXT PRIMARY KEY, cents INTEGER NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY,day TEXT NOT NULL,reserved INTEGER NOT NULL,charged INTEGER)")
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT cents FROM budget WHERE day=?", (day,)).fetchone()
-        used = row[0] if row else 0
+        used = max(row[0] if row else 0, floor_cents)
         if used + RESERVATION_CENTS > DAILY_CENTS:
             raise ValueError("Daily conservative budget exhausted")
         db.execute("INSERT INTO budget VALUES(?,?) ON CONFLICT(day) DO UPDATE SET cents=excluded.cents",
-                   (day, used + RESERVATION_CENTS))
+                    (day, used + RESERVATION_CENTS))
+        db.execute("INSERT INTO attempts VALUES(?,?,?,NULL)", (attempt, day, RESERVATION_CENTS))
+    return attempt
+
+
+def settle(db_path, attempt, usage):
+    """Release unused reservation only after complete, validated provider usage.
+
+    Charge whole cents at the admitted *price ceilings*, not optimistic actual
+    prices. Errors, partial streams and missing usage retain the full reserve.
+    """
+    prompt, output = usage.get("prompt_tokens"), usage.get("completion_tokens")
+    if type(prompt) is not int or type(output) is not int or prompt < 0 or not 0 <= output <= 4096:
+        raise ValueError("Invalid provider usage")
+    charged = max(1, (prompt + 4 * output + 9999) // 10000)
+    if charged > RESERVATION_CENTS:
+        raise ValueError("Usage exceeded the conservative reservation")
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT day,reserved,charged FROM attempts WHERE id=?", (attempt,)).fetchone()
+        if row is None:
+            raise ValueError("Unknown reservation")
+        if row[2] is not None:
+            return
+        db.execute("UPDATE attempts SET charged=? WHERE id=?", (charged, attempt))
+        db.execute("UPDATE budget SET cents=cents-? WHERE day=?", (row[1] - charged, row[0]))
+
+
+class UsageStream:
+    def __init__(self):
+        self.buffer = b""
+        self.usage = None
+        self.done = False
+
+    def feed(self, chunk):
+        self.buffer += chunk
+        if len(self.buffer) > 1024 * 1024:
+            raise ValueError("Provider event exceeds limit")
+        while b"\n" in self.buffer:
+            line, self.buffer = self.buffer.split(b"\n", 1)
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == b"[DONE]":
+                self.done = True
+            else:
+                event = json.loads(payload)
+                if not isinstance(event, dict):
+                    raise ValueError("Invalid provider event")
+                if isinstance(event.get("usage"), dict):
+                    self.usage = event["usage"]
 
 
 def completion(body):
@@ -135,19 +199,31 @@ class Gateway(BaseHTTPRequestHandler):
             body = completion(json.loads(self.rfile.read(length)))
             stage = "key"
             key = Path(os.environ["KEY_FILE"]).read_text().strip()
-            check_key(key)
+            key_data = check_key(key)
             stage = "price"
             check_price(key)
             stage = "reservation"
-            reserve(os.environ["BUDGET_DB"])
+            attempt = reserve(os.environ["BUDGET_DB"], provider_floor_cents(key_data))
             stage = "completion"
             with upstream("/chat/completions", key, body) as response:
                 self.send_response(200)
                 self.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
                 self.end_headers()
+                usage = UsageStream()
+                complete_usage = True
                 while chunk := response.read1(8192):
                     self.wfile.write(chunk)
                     self.wfile.flush()
+                    if complete_usage:
+                        try:
+                            usage.feed(chunk)
+                        except (ValueError, TypeError, KeyError):
+                            complete_usage = False
+                if complete_usage and usage.done and usage.usage is not None:
+                    try:
+                        settle(os.environ["BUDGET_DB"], attempt, usage.usage)
+                    except (ValueError, sqlite3.Error):
+                        print("gateway retained full reservation: incomplete accounting", flush=True)
         except (ValueError, KeyError, TypeError, StopIteration) as error:
             print("gateway denied:", stage, type(error).__name__, flush=True)
             self.send_error(429, "Budget or request policy denied")

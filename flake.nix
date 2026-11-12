@@ -34,7 +34,7 @@
             nativeBuildInputs = [ pkgs.python3 ];
           } ''
             cd "${self}"
-            python3 -B -m unittest discover -s test -p test_pi_reviews.py -v
+            python3 -B -m unittest discover -s test -p 'test_*.py' -v
             touch "$out"
           '';
           spec-verify = pkgs.runCommand "forgejo-copilot-spec-verify" {

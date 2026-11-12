@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "application_id": "REPLACE_WITH_APPLICATION_ID",
+  "token_file": "~/.config/forgejo-copilot/discord-token",
+  "service_config": "~/.config/forgejo-copilot/service.json",
+  "message_content": false,
+  "channels": {}
+}

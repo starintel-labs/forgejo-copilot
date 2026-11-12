@@ -8,6 +8,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
+from datetime import datetime, timezone
 
 SOURCE = Path(__file__).resolve().parent.parent
 
@@ -47,6 +48,8 @@ def main():
     parser.add_argument("--forgejo-url", default="https://git.starintel.actor")
     parser.add_argument("--identity", action="append", default=[], metavar="USER=TOKEN_FILE")
     parser.add_argument("--review-as", help="Verified identity used for review comments")
+    parser.add_argument("--task-identity", action="append", default=[], metavar="USER=TOKEN_FILE")
+    parser.add_argument("--task-reference", action="append", default=[], metavar="REPO=PINNED_DIRECTORY")
     parser.add_argument("--openrouter-dir", type=Path, default=Path.home() / ".config/openrouter")
     args = parser.parse_args()
     if os.getuid() != 1000:
@@ -59,6 +62,13 @@ def main():
         identities[login] = str(Path(path).resolve())
     from pi_review_service import load_identities
     load_identities(args.forgejo_url, identities)
+    task_identities = {login: str(Path(path).resolve()) for login, path in (entry.split("=", 1) for entry in args.task_identity)}
+    if set(task_identities) - set(identities):
+        parser.error("Every task writer must also have a configured reply identity")
+    load_identities(args.forgejo_url, task_identities)
+    task_references = {repo: str(Path(path).resolve()) for repo, path in (entry.split("=", 1) for entry in args.task_reference)}
+    if set(task_references) - set(args.repo):
+        parser.error("Task references must belong to an enrolled repository")
     if args.review_as and args.review_as not in identities:
         parser.error("--review-as requires a matching --identity")
     key = provision_key(args.openrouter_dir)
@@ -75,14 +85,23 @@ def main():
         shutil.copytree(SOURCE / folder, install / folder, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__"))
     config_file = config_dir / "service.json"
+    previous = json.loads(config_file.read_text()) if config_file.exists() else {}
+    auto_since = {repo: stamp for repo, stamp in previous.get("auto_since", {}).items() if repo in args.repo}
+    for repo in args.repo:
+        if repo not in previous.get("repos", []):
+            auto_since[repo] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     config_file.write_text(json.dumps({"forgejo_url": args.forgejo_url,
                                      "token_file": str(args.token_file.resolve()),
                                      "identities": identities,
+                                     "task_identities": task_identities,
+                                     "task_references": task_references,
                                      "review_identity": args.review_as,
+                                     "auto_since": auto_since,
                                      "repos": args.repo, "state_dir": str(state)}, indent=2))
     config_file.chmod(0o600)
     run("docker", "build", "-f", str(SOURCE / "deploy/pi.Dockerfile"), "-t", "forgejo-copilot-pi:1.5.2", str(SOURCE))
     run("docker", "build", "-f", str(SOURCE / "deploy/gateway.Dockerfile"), "-t", "forgejo-copilot-gateway:1", str(SOURCE))
+    subprocess.run(["systemctl", "--user", "stop", "forgejo-copilot-worker.service"], capture_output=True)
     subprocess.run(["systemctl", "--user", "stop", "forgejo-copilot.service"], check=True)
     network = "forgejo-copilot-sandbox"
     existing = subprocess.run(["docker", "network", "inspect", network], capture_output=True)
@@ -115,9 +134,20 @@ def main():
     for key, value in {"PYTHON": sys.executable, "INSTALL": install, "CONFIG": config_file}.items():
         text = text.replace("@" + key + "@", str(value))
     unit.write_text(text)
+    worker_unit = unit_dir / "forgejo-copilot-worker.service"
+    if worker_unit.is_symlink():
+        raise ValueError("Worker unit owned by another configuration manager")
+    worker_text = (SOURCE / "deploy/forgejo-copilot-worker.service.in").read_text()
+    for key, value in {"PYTHON": sys.executable, "INSTALL": install, "CONFIG": config_file}.items():
+        worker_text = worker_text.replace("@" + key + "@", str(value))
+    worker_unit.write_text(worker_text)
     run("systemctl", "--user", "daemon-reload")
     run("systemctl", "--user", "enable", "forgejo-copilot.service")
     run("systemctl", "--user", "restart", "forgejo-copilot.service")
+    if task_identities:
+        run("systemctl", "--user", "enable", "--now", "forgejo-copilot-worker.service")
+    else:
+        subprocess.run(["systemctl", "--user", "disable", "forgejo-copilot-worker.service"], capture_output=True)
     print("Deployed Forgejo Pi review service with dedicated $5/day OpenRouter key")
 
 

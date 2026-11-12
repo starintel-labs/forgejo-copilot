@@ -1,0 +1,18 @@
+[Unit]
+Description=Forgejo Copilot isolated implementation worker
+After=network-online.target forgejo-copilot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@PYTHON@ @INSTALL@/scripts/copilot_worker.py --config @CONFIG@
+WorkingDirectory=@INSTALL@
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=40
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--user", action="append", required=True)
     parser.add_argument("--forgejo-url", default="https://git.starintel.actor")
     parser.add_argument("--output-dir", type=Path, default=Path.home() / ".config/forgejo-copilot")
+    parser.add_argument("--task-writer", action="store_true", help="Mint separate repository-write tokens for the trusted publisher")
     args = parser.parse_args()
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
     if args.jump:
@@ -33,13 +34,13 @@ def main():
     for login in args.user:
         if not re.fullmatch(r"[a-z0-9_-]+", login):
             parser.error("Invalid account name")
-        path = args.output_dir / (login + "-token")
+        path = args.output_dir / (login + ("-task-token" if args.task_writer else "-token"))
         if not path.exists():
             command = ["runuser", "-u", "forgejo", "--", "env", "FORGEJO_WORK_DIR=/var/lib/forgejo",
                        "FORGEJO_CUSTOM=/var/lib/forgejo/custom", match[1], "--config",
                        "/var/lib/forgejo/custom/conf/app.ini", "admin", "user", "generate-access-token",
-                       "--username", login, "--token-name", "forgejo-copilot-questions-" + stamp,
-                       "--scopes", "read:repository,write:issue,read:user", "--raw"]
+                       "--username", login, "--token-name", ("forgejo-copilot-tasks-" if args.task_writer else "forgejo-copilot-questions-") + stamp,
+                       "--scopes", "write:repository,write:issue,read:user" if args.task_writer else "read:repository,write:issue,read:user", "--raw"]
             result = subprocess.run(ssh + [shlex.join(command)], capture_output=True, text=True, timeout=30, check=True)
             token = result.stdout.strip()
             if not re.fullmatch(r"[a-fA-F0-9]{40,128}", token):

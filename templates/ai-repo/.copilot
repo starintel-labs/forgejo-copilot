@@ -1,0 +1,11 @@
+enabled: true
+auto: true
+tasks: true
+questions: true
+question_mentions: mara,star
+question_mode: mention
+question_context: issues,prs
+question_access: writers
+task_mentions: mara,star
+task_tests: python3 -B -m unittest discover -s tests -v
+task_allowed_paths: src/,tests/,docs/,actors/,README.md,pyproject.toml
