@@ -51,6 +51,19 @@ class Worker(unittest.TestCase):
         self.assertEqual((target / "partial.txt").read_text(), "retained")
         self.assertIsNone(self.store.get(self.job["id"])["container"])
 
+    def test_check_timeout_keeps_current_output_and_explicit_failure(self):
+        with patch.object(worker, "run_process", side_effect=worker.ProcessTimeout("current test started")), patch.object(worker.subprocess, "run") as cleanup:
+            code, output = worker.run_checks(self.store, self.job, self.root, self.settings)
+        self.assertEqual(code, 124)
+        self.assertIn("current test started", output)
+        self.assertIn("deadline exceeded", output)
+        cleanup.assert_called_once()
+
+    def test_real_process_timeout_captures_output(self):
+        with self.assertRaises(worker.ProcessTimeout) as result:
+            worker.run_process([sys.executable, "-u", "-c", "import time; print('started'); time.sleep(30)"], self.store, self.job, timeout=0.01)
+        self.assertIn("started", result.exception.output)
+
     def test_revoked_authority_fails_before_execution(self):
         class Forge:
             def call(inner, path):

@@ -29,6 +29,12 @@ class Steered(Exception):
     pass
 
 
+class ProcessTimeout(TimeoutError):
+    def __init__(self, output):
+        super().__init__("Task subprocess timed out")
+        self.output = output
+
+
 def current_job(store, job):
     current = store.get(job["id"])
     if current["state"] == "cancelled":
@@ -116,7 +122,8 @@ def run_process(argv, store, job, *, prompt=None, timeout=600):
                     break
                 except subprocess.TimeoutExpired:
                     if time.monotonic() >= deadline:
-                        raise TimeoutError("Task subprocess timed out")
+                        output.seek(0)
+                        raise ProcessTimeout(output.read()[-6000:])
             output.seek(0)
             return code, output.read()
         finally:
@@ -177,6 +184,8 @@ def run_checks(store, job, workspace, settings, reference=None):
     argv += command[1:]
     try:
         return run_process(argv, store, job, timeout=180)
+    except ProcessTimeout as error:
+        return 124, error.output + "\nHost check deadline exceeded (180 seconds); container terminated."
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=20)
 
