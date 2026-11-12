@@ -25,6 +25,12 @@ gateway = load("gateway", "deploy/gateway.py")
 
 
 class Reviews(unittest.TestCase):
+    def test_real_identity_review_mentions(self):
+        for text in ("@mara review", "@star /review", "/review", "@copilot review"):
+            self.assertTrue(service.requested({"body": text}, {"mara", "star"}), text)
+        for text in ("@marathon review", "@stranger review", "thanks @mara review"):
+            self.assertFalse(service.requested({"body": text}, {"mara", "star"}), text)
+
     def test_config(self):
         self.assertEqual(service.config("enabled: true\nauto: false")['auto'], False)
         for text in ("", "enabled: maybe", "enabled: true\nenabled: false", "enabled: true\nbroken", "x" * 4097):
@@ -162,6 +168,32 @@ class Reviews(unittest.TestCase):
             forge.text = "enabled: false\nauto: true"
             forge.comments = []
             service.poll(forge, ["owner/repo"], db, "/tmp")
+            self.assertEqual(forge.posts, 1)
+
+    def test_new_enrollment_does_not_review_old_prs_without_request(self):
+        pull = {"number": 1, "created_at": "2026-01-01T00:00:00Z", "state": "open",
+                "base": {"sha": "base"}, "head": {"sha": "head"}}
+        class Fake:
+            comments = []
+            posts = 0
+            def pages(self, path):
+                return [pull] if "/pulls?" in path else self.comments
+            def call(self, path, body=None):
+                if "/contents/.copilot?" in path:
+                    return {"content": base64.b64encode(b"enabled: true\nauto: true").decode()}
+                if "/permission" in path:
+                    return {"permission": "write"}
+                if body:
+                    self.posts += 1
+                    return {"id": 1}
+                return pull
+        forge = Fake()
+        with closing(sqlite3.connect(":memory:")) as db, patch.object(service, "review", return_value=("app.py:1 bug", ["read"])) as review:
+            db.execute("CREATE TABLE completed(id TEXT PRIMARY KEY)")
+            service.poll(forge, ["o/r"], db, "/tmp", review_identities={"mara"}, auto_since="2026-11-12T00:00:00Z")
+            review.assert_not_called()
+            forge.comments = [{"id": 7, "body": "@mara review", "user": {"login": "writer"}}]
+            service.poll(forge, ["o/r"], db, "/tmp", review_identities={"mara"}, auto_since="2026-11-12T00:00:00Z")
             self.assertEqual(forge.posts, 1)
 
     def test_manual_authorization_and_stale_result(self):

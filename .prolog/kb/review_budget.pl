@@ -1,6 +1,9 @@
 budget_provider(openrouter, dedicated_child_key).
 budget_limit(usd, 5, daily_utc, includes_byok).
-budget_local_reservation(cents, 25, per_upstream_attempt, no_refund).
+budget_local_reservation(cents, 25, per_upstream_attempt, retain_unconfirmed_usage).
+budget_settlement(complete_provider_sse_usage, price_ceiling_whole_cents_minimum_one).
+budget_settlement_idempotency(attempt_id).
+budget_admission_floor(live_provider_daily_spend_rounded_up).
 budget_local_daily_max(cents, 500).
 budget_model('openai/gpt-4.1-mini').
 budget_price_ceiling(input_usd_per_million, 1).

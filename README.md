@@ -25,9 +25,12 @@ question_access: writers
 
 The controller reads configuration from the **base commit**, never from the PR
 head. `enabled: false` (or a missing/malformed file) disables reviews.
-`auto: false` allows manual `/review` or `@copilot review` comments from users
-with write/admin permission. Each head/base/trigger combination is reviewed
+Manual reviews accept `/review`, `@mara review`, `@star review` and legacy
+`@copilot review` comments from users with write/admin permission. Each head/base/trigger combination is reviewed
 once, including across restarts; changing either commit permits a fresh review.
+Newly enrolled repositories automatically review new PRs, not their entire old
+backlog. An explicit review request still works on an existing PR, regardless
+of `auto`; it takes precedence over automatic admission.
 Disablement or a changed head/base during a review suppresses the stale result.
 With this configuration, questions mentioning `@mara` or `@star` must contain
 `?` or `/ask`, and come from a repository writer/admin. Each account replies as

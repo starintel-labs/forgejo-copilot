@@ -2,3 +2,4 @@
 :- ensure_loaded(review_isolation).
 :- ensure_loaded(review_budget).
 :- ensure_loaded(question_replies).
+:- ensure_loaded(implementation_jobs).
