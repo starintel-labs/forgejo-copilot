@@ -1,0 +1,19 @@
+{
+  "providers": {
+    "copilot": {
+      "baseUrl": "http://forgejo-copilot-gateway:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "sandbox-no-secret",
+      "models": [{
+        "id": "openai/gpt-4.1-mini",
+        "name": "Copilot budgeted review",
+        "reasoning": false,
+        "input": ["text"],
+        "compat": {"supportsStore": false, "maxTokensField": "max_tokens", "supportsDeveloperRole": false},
+        "contextWindow": 64000,
+        "maxTokens": 4096,
+        "cost": {"input": 0.4, "output": 1.6, "cacheRead": 0.1, "cacheWrite": 0}
+      }]
+    }
+  }
+}

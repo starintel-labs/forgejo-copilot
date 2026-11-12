@@ -3,3 +3,5 @@ result
 .direnv/
 *.log
 .prolog/
+__pycache__/
+*.pyc

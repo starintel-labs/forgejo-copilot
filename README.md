@@ -1,5 +1,44 @@
 # forgejo-copilot
 
+## Deployed Pi review and question service
+
+The deployable review path is now `scripts/pi_review_service.py`: a trusted
+Forgejo poller launches **Pi 1.5.2 with read/bash tools in a disposable Docker
+container**. It reviews code and answers repository questions using verified
+real Forgejo accounts (`mara`, `star`), never display-name impersonation. It
+posts comments but never pushes, approves, merges, or implements changes. The older Prolog task engine
+below is not started by this deployment.
+
+For every repository in the service watch list, merge this file as `.copilot`
+into the target branch to enable reviews across all its PRs:
+
+```yaml
+enabled: true
+auto: true
+tasks: false
+questions: true
+question_mentions: mara,star
+question_mode: explicit
+question_context: issues,prs
+question_access: writers
+```
+
+The controller reads configuration from the **base commit**, never from the PR
+head. `enabled: false` (or a missing/malformed file) disables reviews.
+`auto: false` allows manual `/review` or `@copilot review` comments from users
+with write/admin permission. Each head/base/trigger combination is reviewed
+once, including across restarts; changing either commit permits a fresh review.
+Disablement or a changed head/base during a review suppresses the stale result.
+With this configuration, questions mentioning `@mara` or `@star` must contain
+`?` or `/ask`, and come from a repository writer/admin. Each account replies as
+itself. Set `question_mode: mention` to answer any direct mention, restrict
+`question_mentions` to one account, or use `questions: false` to disable replies.
+
+See [Pi deployment and security](docs/pi-deployment.md) for installation,
+repository enrollment, daily spending controls, limitations and verification.
+
+## Original Prolog task engine
+
 A long-running SWI-Prolog service that watches a Forgejo instance and acts as
 **@copilot**: when a non-bot user mentions `@copilot` on an issue or PR, the
 service executes the task on that issue — partition context, plan, branch,
@@ -111,24 +150,12 @@ nix develop
 swipl -q -s bin/copilot-demo.pl   # one mention through the pipeline, no env, no network
 ```
 
-### Dogfood (self-host)
+### Self-hosting
 
-This repository runs the bot on itself: a `.copilot` (`enabled: true`,
-`tasks: true`, `auto: false`) is committed at the repo root, so PRs
-against this repo come back through the flake checks:
-
-```sh
-# 1. run the service pointed at this repo
-FORGEJO_URL=... FORGEJO_TOKEN=... \
-  swipl -s bin/copilot-service.pl -- --forever --repo nsaspy/forgejo-copilot
-
-# 2. open an issue mentioning @copilot with a small task
-# 3. the bot branches under copilot/, pushes, opens a PR; CI (nix flake check)
-#    gates the merge — the human approves, never the bot
-```
-
-`auto: false` keeps opened PRs out of automatic review storms; ask for
-`/review` explicitly when you want one.
+The root `.copilot` now enables automatic reviews and disables implementation
+tasks. Use the Pi deployment above for reviews. Running implementation tasks
+with the original engine requires a deliberate `tasks: true` opt-in; it is not
+part of the deployed review service.
 
 ## Running tests
 

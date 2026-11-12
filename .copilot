@@ -2,6 +2,11 @@
 # Read from the PR base branch HEAD only; a .copilot inside a PR branch
 # never self-enables.
 enabled: true
-tasks: true
-auto: false
+tasks: false
+auto: true
 model: fast
+questions: true
+question_mentions: mara,star
+question_mode: explicit
+question_context: issues,prs
+question_access: writers

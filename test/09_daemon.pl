@@ -79,15 +79,14 @@ test(env_fail_fast_when_empty_repo_list) :-
 
 :- begin_tests(selfhost_config).
 
-test(repo_copilot_is_enabling_tasks_on_auto_off) :-
+test(repo_copilot_enables_reviews_without_tasks) :-
     fcopilot_loader:repo_root(Root),
     format(atom(Path), '~w/.copilot', [Root]),
     read_file_to_string(Path, Text, []),
     copilot_config:parse(Text, Config),
     get_dict(enabled, Config, true),
-    get_dict(tasks, Config, true),
-    get_dict(auto, Config, Auto),
-    Auto \== true.
+    get_dict(tasks, Config, false),
+    get_dict(auto, Config, true).
 
 test(repo_copilot_uses_fast_model) :-
     fcopilot_loader:repo_root(Root),

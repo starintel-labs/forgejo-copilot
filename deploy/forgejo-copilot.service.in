@@ -1,0 +1,17 @@
+[Unit]
+Description=Forgejo Copilot Pi sandbox review service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@PYTHON@ @INSTALL@/scripts/pi_review_service.py --config @CONFIG@
+WorkingDirectory=@INSTALL@
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

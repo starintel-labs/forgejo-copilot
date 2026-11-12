@@ -16,7 +16,7 @@
 
 :- use_module('loader.pl').
 :- use_module(fcopilot_spec(forgejo_copilot_spec)).
-:- use_module(fcopilot(copilot_delegate)).
+:- use_module(fcopilot(copilot_delegate), []).
 :- use_module(fcopilot(journal)).
 :- use_module(fcopilot(llm_text)).
 :- use_module(library(base64)).
